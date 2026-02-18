@@ -1,0 +1,48 @@
+{
+  "areja-koplietosana-l1": [
+    "koplietosana",
+    "piekluve"
+  ],
+  "automatiska-wp-publicesana-l1": [
+    "publicesana",
+    "satura-kalendars"
+  ],
+  "azure-functions-sharepoint-l4": [
+    "azure-functions",
+    "sharepoint"
+  ],
+  "efektiva-datu-glabasanas-politiku-izstrade-un-parvaldiba": [],
+  "erp-integracija-l5": [
+    "erp-integracija"
+  ],
+  "flow-monitorings-l5": [],
+  "ieksejie-portali-l2": [
+    "intranets"
+  ],
+  "komunikaciju-vietnes-team-vietnes": [
+    "intranets"
+  ],
+  "laiciga-piekluve-timebound-l1": [],
+  "lielo-biblioteku-veiktspeja-l5": [],
+  "multikanalu-publicesana-l2": [],
+  "pa-http-uz-api-l3": [
+    "api-odata"
+  ],
+  "pa-odata-filtri-l4": [
+    "api-odata"
+  ],
+  "rezerves-kopijas-atjaunosana-l5": [
+    "rezerves-kopijas",
+    "atjaunosana"
+  ],
+  "satura-kalendars-l4": [],
+  "seo-wordpress-l3": [],
+  "spfx-parskats-l2": [
+    "spfx"
+  ],
+  "spfx-webpart-ar-react-l3": [
+    "spfx",
+    "webpart",
+    "react"
+  ]
+}

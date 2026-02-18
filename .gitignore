@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Azure Functions
+local.settings.json
+.python_packages/
+.func/
+
+# Local emulator
+.azurite/
+AzuriteConfig
+
+# IDE
+.vscode/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Secrets / env
+.env
+*.env
