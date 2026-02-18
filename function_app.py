@@ -41,41 +41,25 @@ from image_gen import (
     generate_image_b64,
 )
 
-# =============================================================================
-# Raksta Ä£enerÄ“Å¡anas helpers (iznesti uz atseviÅ¡Ä·u moduÄ¼i)
-# =============================================================================
+# Article generation helpers
 from article_gen import (
-    # meta helpers
     pick_item,
     extract_meta,
-    # core builder
     build_wp_article_from_item,
-    # section helpers used by async worker
     generate_draft_outline,
     generate_section_html_with_validation,
     topup_section_html,
     refine_full_article,
-    normalize_tags,
     ensure_wp_tag_ids,
     count_words_from_html,
-    has_blockquote,
     calculate_section_words,
-    needs_aggressive_topup,
     quality_issues,
-    # NEW: keyword extractor
     generate_keywords_from_input,
-    # HTML helpers reused by worker & FB copy
     slugify,
     sanitize_html,
     normalize_lv_headings,
-    # LLM HTTP helpers reused by image + FB copy
-    is_azure_openai,
-    get_url,
-    get_headers,
-    http_post_json,
-    # chat_json for FB copy
-    chat_json,
 )
+
 
 # =============================================================================
 # Azure Functions App
@@ -360,6 +344,22 @@ def generate_wp_article(req: func.HttpRequest) -> func.HttpResponse:
 # =============================================================================
 # HTTP: FB copy generator
 # =============================================================================
+@app.function_name(name="generate_fb_copy")
+@app.route(
+    route="generate-fb-copy",
+    methods=["POST"],
+    auth_level=func.AuthLevel.FUNCTION,
+)
+def fb_copy_endpoint(req: func.HttpRequest) -> func.HttpResponse:
+    incoming = read_incoming(req)
+    if not incoming:
+        return bad(400, error="Invalid JSON body")
+    try:
+        result = generate_fb_copy(incoming)
+    except Exception as e:
+        logging.exception("generate_fb_copy failed")
+        return bad(502, error="fb_copy_failed", message=str(e)[:400])
+    return ok(**result)
 
 #==============================================================================
 # HTTP: KeywordExtractor
