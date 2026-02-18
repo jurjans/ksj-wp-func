@@ -7,7 +7,6 @@ provider detection based on environment variables.
 
 import datetime
 import io
-import os
 import re
 import unicodedata
 import urllib.error
@@ -22,23 +21,24 @@ from article_gen import (
     http_post_json,
 )
 
-# =============================================================================
-# Constants
-# =============================================================================
-SOCIAL_HEADER_W = 1200
-SOCIAL_HEADER_H = 630
-SOCIAL_HEADER_RATIO = SOCIAL_HEADER_W / SOCIAL_HEADER_H
-
-ALLOWED_SIZES = {(1024, 1024), (1536, 1024), (1024, 1536)}
-
-# Threshold: if cropping loses more than 18% of area, use "contain" instead
-CROP_LOSS_THRESHOLD = 0.18
-
-# SEO defaults (overridable via env)
-SEO_KEYWORD = os.getenv("KSJ_SEO_KEYWORD", "datu sinhronizācija")
-SEO_DESC_SUFFIX = os.getenv(
-    "KSJ_SEO_DESC_SUFFIX",
-    "Bez dublikātiem, uzlabota datu kvalitāte un uzticami atjauninājumi.",
+from config import (
+    OAI_API_KEY,
+    OAI_BASE_URL,
+    OAI_MODEL,
+    OAI_IMAGE_MODEL,
+    AZURE_OPENAI_ENDPOINT,
+    AZURE_OPENAI_API_KEY,
+    AZURE_OPENAI_DEPLOYMENT,
+    AZURE_OPENAI_API_VERSION_IMAGES,
+    FORCE_IMAGE_PROVIDER,
+    AZURE_OPENAI_IMAGE_DEPLOYMENT,
+    SOCIAL_HEADER_W,
+    SOCIAL_HEADER_H,
+    SOCIAL_HEADER_RATIO,
+    ALLOWED_IMAGE_SIZES,
+    CROP_LOSS_THRESHOLD,
+    SEO_KEYWORD,
+    SEO_DESC_SUFFIX,
 )
 
 
@@ -50,64 +50,46 @@ def get_images_url() -> str:
     Build image generation endpoint URL.
     Priority: FORCE_IMAGE_PROVIDER > AZURE_OPENAI_IMAGE_DEPLOYMENT > OpenAI fallback.
     """
-    force = (os.getenv("FORCE_IMAGE_PROVIDER", "") or "").strip().lower()
-    dep = (os.getenv("AZURE_OPENAI_IMAGE_DEPLOYMENT", "") or "").strip()
+    if FORCE_IMAGE_PROVIDER == "openai":
+        return f"{OAI_BASE_URL.rstrip('/')}/images/generations"
 
-    if force == "openai":
-        base = (os.getenv("OAI_BASE_URL", "https://api.openai.com/v1") or "").rstrip("/")
-        return f"{base}/images/generations"
-
-    if force == "azure" or dep:
-        if not dep:
+    if FORCE_IMAGE_PROVIDER == "azure" or AZURE_OPENAI_IMAGE_DEPLOYMENT:
+        if not AZURE_OPENAI_IMAGE_DEPLOYMENT:
             raise RuntimeError(
                 "FORCE_IMAGE_PROVIDER=azure, bet AZURE_OPENAI_IMAGE_DEPLOYMENT nav iestatīts"
             )
-        base = (os.getenv("AZURE_OPENAI_ENDPOINT", "") or "").rstrip("/")
-        ver = (
-            os.getenv(
-                "AZURE_OPENAI_API_VERSION_IMAGES",
-                os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview"),
-            )
-            or ""
-        ).strip()
-        return f"{base}/openai/deployments/{dep}/images/generations?api-version={ver}"
+        base = AZURE_OPENAI_ENDPOINT.rstrip("/")
+        ver = AZURE_OPENAI_API_VERSION_IMAGES.strip()
+        return f"{base}/openai/deployments/{AZURE_OPENAI_IMAGE_DEPLOYMENT}/images/generations?api-version={ver}"
 
     # Fallback: OpenAI
-    base = (os.getenv("OAI_BASE_URL", "https://api.openai.com/v1") or "").rstrip("/")
-    return f"{base}/images/generations"
+    return f"{OAI_BASE_URL.rstrip('/')}/images/generations"
 
 
 def get_images_headers() -> dict:
     """Image auth headers — Bearer for OpenAI, api-key for Azure."""
-    force = (os.getenv("FORCE_IMAGE_PROVIDER", "") or "").strip().lower()
-    dep = (os.getenv("AZURE_OPENAI_IMAGE_DEPLOYMENT", "") or "").strip()
-
-    if force == "openai" or not dep:
+    if FORCE_IMAGE_PROVIDER == "openai" or not AZURE_OPENAI_IMAGE_DEPLOYMENT:
         return {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {os.getenv('OAI_API_KEY', '')}",
+            "Authorization": f"Bearer {OAI_API_KEY}",
         }
     return {
         "Content-Type": "application/json",
-        "api-key": os.getenv("AZURE_OPENAI_API_KEY", ""),
+        "api-key": AZURE_OPENAI_API_KEY,
     }
 
 
 def get_provider_info() -> dict:
     """Return current provider config for diagnostics."""
-    force = (os.getenv("FORCE_IMAGE_PROVIDER", "") or "").strip().lower()
-    dep = (os.getenv("AZURE_OPENAI_IMAGE_DEPLOYMENT", "") or "").strip()
     url = get_images_url()
     provider = "openai" if "api.openai.com" in url else "azure"
     return {
         "provider": provider,
-        "force": force,
-        "deployment": dep,
+        "force": FORCE_IMAGE_PROVIDER,
+        "deployment": AZURE_OPENAI_IMAGE_DEPLOYMENT,
         "imagesUrl": url,
-        "has_OAI_KEY": bool(os.getenv("OAI_API_KEY")),
-        "has_AZURE_TEXT": bool(
-            os.getenv("AZURE_OPENAI_ENDPOINT") and os.getenv("AZURE_OPENAI_API_KEY")
-        ),
+        "has_OAI_KEY": bool(OAI_API_KEY),
+        "has_AZURE_TEXT": bool(AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY),
     }
 
 
@@ -116,18 +98,14 @@ def get_provider_info() -> dict:
 # =============================================================================
 def coerce_size(w: int, h: int) -> tuple[int, int]:
     """Snap requested dimensions to nearest allowed DALL·E size."""
-    if (w, h) in ALLOWED_SIZES:
+    if (w, h) in ALLOWED_IMAGE_SIZES:
         return w, h
     return (1536, 1024) if w >= h else (1024, 1536)
 
 
 def get_model() -> str:
     """Return the text model name for prompt synthesis."""
-    return (
-        os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
-        if is_azure_openai()
-        else os.getenv("OAI_MODEL", "gpt-4o-mini")
-    )
+    return AZURE_OPENAI_DEPLOYMENT if is_azure_openai() else OAI_MODEL
 
 
 # =============================================================================
@@ -327,7 +305,7 @@ def generate_image_b64(
 
     body = {"prompt": prompt, "size": f"{w}x{h}", "n": 1}
     if provider == "openai":
-        body["model"] = os.getenv("OAI_IMAGE_MODEL", "gpt-image-1")
+        body["model"] = OAI_IMAGE_MODEL
 
     outer = http_post_json(url, headers, body, timeout_sec=120)
 

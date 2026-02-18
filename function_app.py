@@ -2,7 +2,6 @@
 # Imports
 # =============================================================================
 import logging
-import os
 import urllib.error
 from urllib.parse import parse_qs
 
@@ -14,7 +13,6 @@ import azure.functions as func
 
 # Storage helpers (Table, Queue, Blob, SAS, job status, work state)
 from storage import (
-    RESULT_CONTAINER,
     ensure_storage_objects,
     get_blob_client,
     get_work_blob_client,
@@ -24,6 +22,18 @@ from storage import (
     state_load,
     state_save,
     progress,
+)
+
+from config import (
+    RESULT_CONTAINER,
+    DEFAULT_TARGET_WORDS,
+    TOPUP_THRESHOLD,
+    FILLER_THRESHOLD,
+    FILLER_MIN_WORDS,
+    FILLER_BUFFER_WORDS,
+    WP_API_BASE,
+    WP_TOKEN,
+    DEFAULT_FIT_MODE,
 )
 
 from docx_html import convert_docx_to_html
@@ -155,7 +165,7 @@ def _tick_once(op_id: str) -> dict:
     item = state["item"]
     meta = state.get("meta") or extract_meta(pick_item(item))
     state["meta"] = meta
-    target_words = int(state.get("targetWords", 5000))
+    target_words = int(state.get("targetWords", DEFAULT_TARGET_WORDS))
 
     if state["phase"] == "outline":
         outline = generate_draft_outline(meta, target_words)
@@ -179,7 +189,7 @@ def _tick_once(op_id: str) -> dict:
             html = generate_section_html_with_validation(meta, h3_title, per_sec)
 
             words_now = count_words_from_html(html)
-            need = int(per_sec * 0.95) - words_now
+            need = int(per_sec * TOPUP_THRESHOLD) - words_now
             if need > 60:
                 try:
                     html_extra = topup_section_html(meta, h3_title, need)
@@ -217,8 +227,8 @@ def _tick_once(op_id: str) -> dict:
         )
 
         total_words_now = count_words_from_html(content_html)
-        if total_words_now < int(target_words * 0.85):
-            filler_target = max(500, target_words - total_words_now + 300)
+        if total_words_now < int(target_words * FILLER_THRESHOLD):
+            filler_target = max(FILLER_MIN_WORDS, target_words - total_words_now + FILLER_BUFFER_WORDS)
             filler_h3 = "Papildu praktiskie scenÄriji un BUJ"
             try:
                 filler_html = generate_section_html_with_validation(
@@ -264,12 +274,10 @@ def _tick_once(op_id: str) -> dict:
 
         try:
             if data.get("tags") and data.get("tagSlugs") and not data.get("wpTagIds"):
-                api_base = os.environ.get("WP_API_BASE")
-                if api_base:
-                    token = os.getenv("WP_TOKEN", "")
+                if WP_API_BASE:
                     data["wpTagIds"] = ensure_wp_tag_ids(
-                        api_base,
-                        token,
+                        WP_API_BASE,
+                        WP_TOKEN,
                         names=data["tags"],
                         slugs=data["tagSlugs"],
                     )
@@ -284,7 +292,7 @@ def _tick_once(op_id: str) -> dict:
             data.get("tags"),
             data.get("tagSlugs"),
             data.get("wpTagIds"),
-            os.environ.get("WP_API_BASE"),
+            WP_API_BASE,
         )
         status_upsert(
             op_id,
@@ -439,9 +447,9 @@ def enqueue_wp_article(req: func.HttpRequest) -> func.HttpResponse:
     op_id = uuid.uuid4().hex
 
     try:
-        target_words = int(incoming.get("targetWords", 5000))
+        target_words = int(incoming.get("targetWords", DEFAULT_TARGET_WORDS))
     except Exception:
-        target_words = 5000
+        target_words = DEFAULT_TARGET_WORDS
 
     state = {
         "opId": op_id,
@@ -529,7 +537,7 @@ def generate_image(req: func.HttpRequest) -> func.HttpResponse:
 
     prompt_used = (prompt + (f". {style_hint}" if style_hint else "")).strip()
     meta = build_image_meta(ctx, prompt_used, ext=".png")
-    fit_mode = (incoming.get("fitMode") or os.getenv("IMAGE_FIT_MODE") or "auto").lower()
+    fit_mode = (incoming.get("fitMode") or DEFAULT_FIT_MODE).lower()
 
     try:
         result = generate_image_b64(prompt_used, w, h, fit_mode)

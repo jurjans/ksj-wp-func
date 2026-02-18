@@ -5,7 +5,6 @@ Takes article metadata and returns structured FB post content.
 No Azure Functions dependencies — called by function_app route handler.
 """
 
-import os
 import re
 import logging
 
@@ -19,6 +18,7 @@ from article_gen import (
 )
 
 from image_gen import get_model
+from config import BOOK_LINK
 
 
 # =============================================================================
@@ -122,8 +122,7 @@ def generate_fb_copy(incoming: dict) -> dict:
 
     wp_link = (incoming.get("wpLink") or "").strip()
     book_link = (
-        incoming.get("bookLink")
-        or os.getenv("BOOK_LINK", "https://book.jurjans.dev")
+        incoming.get("bookLink") or BOOK_LINK
     ).strip()
     style = (incoming.get("style") or "emoji-bullets").strip()
 

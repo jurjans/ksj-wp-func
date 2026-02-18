@@ -10,7 +10,6 @@ Centralizes all Azure Storage SDK interactions:
 import datetime
 import json
 import logging
-import os
 
 from azure.data.tables import TableServiceClient
 from azure.storage.queue import QueueClient
@@ -22,32 +21,30 @@ from azure.storage.blob import (
 )
 from azure.core.exceptions import ResourceExistsError
 
-# =============================================================================
-# Constants
-# =============================================================================
-JOB_TABLE = "JobStatus"
-JOB_PK = "wp"
-RESULT_CONTAINER = "results"
-WORK_CONTAINER = "work"
+from config import (
+    STORAGE_CONN_STR,
+    JOB_TABLE,
+    JOB_PK,
+    RESULT_CONTAINER,
+    WORK_CONTAINER,
+    QUEUE_NAME,
+    SAS_HOURS_VALID,
+)
 
 
 # =============================================================================
 # Low-level clients
 # =============================================================================
-def _conn_str() -> str:
-    return os.getenv("STORAGE", "")
-
-
 def get_table_client():
     """Return TableClient for JobStatus table (creates if missing)."""
-    svc = TableServiceClient.from_connection_string(_conn_str())
+    svc = TableServiceClient.from_connection_string(STORAGE_CONN_STR)
     svc.create_table_if_not_exists(JOB_TABLE)
     return svc.get_table_client(JOB_TABLE)
 
 
 def get_queue_client() -> QueueClient:
     """Return QueueClient for wpjobs (creates if missing)."""
-    qc = QueueClient.from_connection_string(_conn_str(), "wpjobs")
+    qc = QueueClient.from_connection_string(STORAGE_CONN_STR, QUEUE_NAME)
     try:
         qc.create_queue()
     except ResourceExistsError:
@@ -57,7 +54,7 @@ def get_queue_client() -> QueueClient:
 
 def get_blob_service() -> BlobServiceClient:
     """BlobServiceClient (for container ops & SAS)."""
-    return BlobServiceClient.from_connection_string(_conn_str())
+    return BlobServiceClient.from_connection_string(STORAGE_CONN_STR)
 
 
 def get_blob_client(op_id: str) -> BlobClient:
@@ -96,7 +93,7 @@ def ensure_storage_objects():
 # =============================================================================
 # SAS URL generation
 # =============================================================================
-def make_sas_url(op_id: str, hours_valid: int = 24) -> str | None:
+def make_sas_url(op_id: str, hours_valid: int = SAS_HOURS_VALID) -> str | None:
     """Generate short-term read-only SAS URL for results/{op_id}.json."""
     try:
         bsc = get_blob_service()
