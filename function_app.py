@@ -1,26 +1,14 @@
 # =============================================================================
 # Imports
 # =============================================================================
-import io
 import logging
 import os
-import re
-import ssl
-import unicodedata
 import urllib.error
-import urllib.request
 from urllib.parse import parse_qs
-from base64 import b64decode, b64encode
-from typing import List, Tuple
 
 import json
 import uuid
 import datetime
-import hmac
-import hashlib
-
-import requests
-from PIL import Image
 
 import azure.functions as func
 
@@ -39,6 +27,19 @@ from storage import (
 )
 
 from docx_html import convert_docx_to_html
+
+# Image generation helpers
+from image_gen import (
+    get_images_url,
+    get_images_headers,
+    get_provider_info,
+    coerce_size,
+    build_image_meta,
+    synthesize_image_prompt,
+    build_fallback_prompt,
+    fit_to_social_header,
+    generate_image_b64,
+)
 
 # =============================================================================
 # Raksta Ä£enerÄ“Å¡anas helpers (iznesti uz atseviÅ¡Ä·u moduÄ¼i)
@@ -88,89 +89,6 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 @app.route(route="ping", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def ping(req: func.HttpRequest) -> func.HttpResponse:
     return func.HttpResponse("pong", status_code=200)
-
-
-# =============================================================================
-# Image helpers (text + image endpoints use same OpenAI/Azure config as article_gen)
-# =============================================================================
-def get_images_url() -> str:
-    """
-    Build image generation endpoint URL based on ENV settings.
-    Respects FORCE_IMAGE_PROVIDER and AZURE_OPENAI_IMAGE_DEPLOYMENT.
-    """
-    force = (os.getenv("FORCE_IMAGE_PROVIDER", "") or "").strip().lower()
-    dep = (os.getenv("AZURE_OPENAI_IMAGE_DEPLOYMENT", "") or "").strip()
-
-    # Explicit OpenAI
-    if force == "openai":
-        base = (os.getenv("OAI_BASE_URL", "https://api.openai.com/v1") or "").rstrip("/")
-        return f"{base}/images/generations"
-
-    # Explicit Azure
-    if force == "azure":
-        if not dep:
-            raise RuntimeError(
-                "FORCE_IMAGE_PROVIDER=azure, bet AZURE_OPENAI_IMAGE_DEPLOYMENT nav iestatÄ«ts"
-            )
-        base = (os.getenv("AZURE_OPENAI_ENDPOINT", "") or "").rstrip("/")
-        ver = (
-            os.getenv(
-                "AZURE_OPENAI_API_VERSION_IMAGES",
-                os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview"),
-            )
-            or ""
-        ).strip()
-        return f"{base}/openai/deployments/{dep}/images/generations?api-version={ver}"
-
-    # Auto: Azure images deployment wins if present
-    if dep:
-        base = (os.getenv("AZURE_OPENAI_ENDPOINT", "") or "").rstrip("/")
-        ver = (
-            os.getenv(
-                "AZURE_OPENAI_API_VERSION_IMAGES",
-                os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview"),
-            )
-            or ""
-        ).strip()
-        return f"{base}/openai/deployments/{dep}/images/generations?api-version={ver}"
-
-    # Fallback: OpenAI
-    base = (os.getenv("OAI_BASE_URL", "https://api.openai.com/v1") or "").rstrip("/")
-    return f"{base}/images/generations"
-
-
-def get_images_headers() -> dict:
-    """
-    Image auth headers.
-    If using OpenAI, use Bearer; if Azure images deployment is configured, use api-key.
-    """
-    force = (os.getenv("FORCE_IMAGE_PROVIDER", "") or "").strip().lower()
-    dep = (os.getenv("AZURE_OPENAI_IMAGE_DEPLOYMENT", "") or "").strip()
-
-    if force == "openai" or not dep:
-        return {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {os.getenv('OAI_API_KEY','')}",
-        }
-    return {
-        "Content-Type": "application/json",
-            "api-key": os.getenv("AZURE_OPENAI_API_KEY", ""),
-    }
-
-
-def coerce_size(w: int, h: int) -> tuple[int, int]:
-    allowed = {(1024, 1024), (1536, 1024), (1024, 1536)}
-    if (w, h) in allowed:
-        return w, h
-    return (1536, 1024) if w >= h else (1024, 1536)
-
-
-def get_model() -> str:
-    return (
-        os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
-        if is_azure_openai()
-        else os.getenv("OAI_MODEL", "gpt-4o-mini")
-    )
 
 
 # =============================================================================
@@ -579,133 +497,6 @@ def wp_job_status(req: func.HttpRequest) -> func.HttpResponse:
     return ok(opId=op_id, status=e.get("status"), updatedUtc=e.get("updatedUtc"), info=info)
 
 
-# =============================================================================
-# KSJ: SEO image meta helpers
-# =============================================================================
-KSJ_KEYWORD = os.getenv("KSJ_SEO_KEYWORD", "datu sinhronizÄcija")
-KSJ_DESC_SUFFIX = os.getenv(
-    "KSJ_SEO_DESC_SUFFIX",
-    "Bez dublikÄtiem, uzlabota datu kvalitÄte un uzticami atjauninÄjumi.",
-)
-
-
-def _ksj_norm(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "").strip())
-
-
-def _ksj_slug(s: str) -> str:
-    s = s.lower().strip()
-    mapping = str.maketrans(
-        {
-            "Ä": "a",
-            "Ä": "c",
-            "Ä“": "e",
-            "Ä£": "g",
-            "Ä«": "i",
-            "Ä·": "k",
-            "Ä¼": "l",
-            "Å†": "n",
-            "Å¡": "s",
-            "Å«": "u",
-            "Å¾": "z",
-            "Ä€": "a",
-            "ÄŒ": "c",
-            "Ä’": "e",
-            "Ä¢": "g",
-            "Äª": "i",
-            "Ä¶": "k",
-            "Ä»": "l",
-            "Å…": "n",
-            "Å ": "s",
-            "Åª": "u",
-            "Å½": "z",
-        }
-    )
-    s = s.translate(mapping)
-    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
-    s = re.sub(r"[^a-z0-9\-]+", "-", s)
-    s = re.sub(r"-{2,}", "-", s).strip("-")
-    return s or "attels"
-
-
-def _ksj_trunc(s: str, n: int) -> str:
-    s = _ksj_norm(s)
-    return s if len(s) <= n else s[: n - 1] + "â€¦"
-
-
-def ksj_build_image_meta(ctx: dict, prompt_used: str, ext: str = ".png") -> dict:
-    title = _ksj_norm((ctx.get("title") or ""))
-    if not title:
-        words = re.split(r"[,\.\s]+", _ksj_norm(prompt_used))
-        title = " ".join(words[:10]) if words else "Datu sinhronizÄcija"
-
-    alt = title
-    if KSJ_KEYWORD.lower() not in alt.lower():
-        alt = f"{alt} â€” {KSJ_KEYWORD}"
-    alt = _ksj_trunc(alt, 120)
-
-    caption = title
-    desc = _ksj_trunc(f"{title}. {KSJ_DESC_SUFFIX}", 220)
-
-    stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-    fname = f"{_ksj_slug(title)}-{stamp}{ext or '.png'}"
-
-    return {
-        "alt_text": alt,
-        "caption": caption,
-        "description": desc,
-        "file_name": fname,
-    }
-
-
-# =============================================================================
-# Image generator endpoint
-# =============================================================================
-def synthesize_image_prompt(ctx: dict, style_hint: str) -> str:
-    system = (
-        "You write a single high-quality image prompt for Azure OpenAI Images (DALLÂ·E 3 / gpt-image). "
-        "Constraints: 1200x630 social header, modern, clean, metaphorical visual. "
-        "No text overlays, no logos or trademarks, no faces or personal data, no political content. "
-        "Output a single line, no quotes."
-    )
-    title = (ctx.get("title") or "").strip()
-    primary = (ctx.get("primary") or "").strip()
-    angle = (ctx.get("angle") or "").strip()
-    audience = (ctx.get("audience") or "").strip()
-
-    user = (
-        f"Title: {title}\n"
-        f"Primary: {primary}\n"
-        f"Angle: {angle}\n"
-        f"Audience: {audience}\n"
-        f"Desired style hint: {style_hint}"
-    )
-
-    payload = {
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "max_tokens": 300,
-        "temperature": 0.7,
-    }
-
-    outer = http_post_json(get_url(), get_headers(), payload, timeout_sec=45)
-    text = (
-        outer.get("output_text")
-        or outer.get("output")
-        or (outer.get("choices", [{}])[0].get("message", {}).get("content"))
-    )
-    if not text and isinstance(outer.get("output", []), list):
-        try:
-            text = outer["output"][0]["content"][0].get("text")
-        except Exception:
-            pass
-    if not text:
-        raise RuntimeError("prompt synthesis returned empty")
-    return " ".join(text.strip().split())
-
-
 @app.function_name(name="generate_image")
 @app.route(
     route="generate-image",
@@ -734,117 +525,31 @@ def generate_image(req: func.HttpRequest) -> func.HttpResponse:
         try:
             prompt = synthesize_image_prompt(ctx, style_hint)
         except Exception:
-            title = (ctx.get("title") or "").strip()
-            primary = (ctx.get("primary") or "").strip()
-            angle = (ctx.get("angle") or "").strip()
-            audience = (ctx.get("audience") or "").strip()
-            prompt = " ".join(
-                [
-                    "Create a Facebook header image.",
-                    f"Topic: {title}.",
-                    f"Primary: {primary}." if primary else "",
-                    f"Angle: {angle}." if angle else "",
-                    f"Audience: {audience}." if audience else "",
-                    "Clean, minimalist, high-contrast. No text, no logos, no trademarks.",
-                ]
-            ).strip()
+            prompt = build_fallback_prompt(ctx)
 
     prompt_used = (prompt + (f". {style_hint}" if style_hint else "")).strip()
-    meta = ksj_build_image_meta(ctx, prompt_used, ext=".png")
-
-    url = get_images_url()
-    headers = get_images_headers()
-    provider = "openai" if "api.openai.com" in url else "azure"
-
-    body = {"prompt": prompt_used, "size": f"{w}x{h}", "n": 1}
-    if provider == "openai":
-        body["model"] = os.getenv("OAI_IMAGE_MODEL", "gpt-image-1")
-
+    meta = build_image_meta(ctx, prompt_used, ext=".png")
     fit_mode = (incoming.get("fitMode") or os.getenv("IMAGE_FIT_MODE") or "auto").lower()
 
     try:
-        outer = http_post_json(url, headers, body, timeout_sec=120)
+        result = generate_image_b64(prompt_used, w, h, fit_mode)
     except urllib.error.HTTPError as e:
         txt = e.read().decode("utf-8") if hasattr(e, "read") else str(e)
         return bad(502, error="images api http", message=txt[:400])
+    except RuntimeError as e:
+        return bad(502, error="image generation failed", message=str(e)[:400])
     except Exception as e:
         return bad(502, error="images api call failed", message=str(e))
 
-    try:
-        data = outer.get("data") or []
-        b64 = data[0].get("b64_json") if data else None
-        if not b64 or not isinstance(b64, str) or not b64.strip():
-            return bad(502, error="no image in response", raw=str(outer)[:400])
-        if len(b64) < 1000:
-            return bad(502, error="image too small", raw=str(outer)[:400])
-
-        try:
-            raw = b64decode(b64)
-            img = Image.open(io.BytesIO(raw)).convert("RGBA")
-            target_w, target_h = 1200, 630
-            tr = target_w / target_h
-            w0, h0 = img.width, img.height
-
-            def crop_cover(im):
-                w_, h_ = im.width, im.height
-                cur = w_ / h_
-                if cur > tr:
-                    new_w = int(h_ * tr)
-                    left = (w_ - new_w) // 2
-                    im = im.crop((left, 0, left + new_w, h_))
-                else:
-                    new_h = int(w_ / tr)
-                    top = (h_ - new_h) // 2
-                    im = im.crop((0, top, w_, top + new_h))
-                return im
-
-            def pad_contain(im, bg=(248, 248, 248, 255)):
-                scale = min(target_w / im.width, target_h / im.height)
-                new_w, new_h = int(im.width * scale), int(im.height * scale)
-                im = im.resize((new_w, new_h), Image.LANCZOS)
-                canvas = Image.new("RGBA", (target_w, target_h), bg)
-                off = ((target_w - new_w) // 2, (target_h - new_h) // 2)
-                canvas.paste(im, off, im)
-                return canvas
-
-            mode = fit_mode
-            if mode == "auto":
-                if (w0 / h0) > tr:
-                    cover_w, cover_h = int(h0 * tr), h0
-                else:
-                    cover_w, cover_h = w0, int(w0 / tr)
-                kept = (cover_w * cover_h) / (w0 * h0)
-                mode = "contain" if (1 - kept) > 0.18 else "cover"
-
-            if mode == "cover":
-                img = crop_cover(img)
-                img = img.resize((target_w, target_h), Image.LANCZOS)
-            else:
-                img = pad_contain(img)
-
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            b64 = b64encode(buf.getvalue()).decode("ascii")
-            w, h = target_w, target_h
-        except Exception:
-            pass
-
-        return ok(
-            imageBase64=b64,
-            ext=".png",
-            width=w,
-            height=h,
-            correlationId=cid,
-            promptUsed=prompt_used,
-            provider=provider,
-            altText=meta["alt_text"],
-            caption=meta["caption"],
-            description=meta["description"],
-            fileName=meta["file_name"],
-            imagesUrl=url[:120],
-        )
-    except Exception as e:
-        return bad(502, error="parse images response", message=str(e))
+    return ok(
+        **result,
+        correlationId=cid,
+        promptUsed=prompt_used,
+        altText=meta["alt_text"],
+        caption=meta["caption"],
+        description=meta["description"],
+        fileName=meta["file_name"],
+    )
 
 
 # =============================================================================
@@ -857,19 +562,4 @@ def generate_image(req: func.HttpRequest) -> func.HttpResponse:
     auth_level=func.AuthLevel.FUNCTION,
 )
 def whoami_images(req: func.HttpRequest) -> func.HttpResponse:
-    force = (os.getenv("FORCE_IMAGE_PROVIDER", "") or "").strip().lower()
-    dep = (os.getenv("AZURE_OPENAI_IMAGE_DEPLOYMENT", "") or "").strip()
-
-    url = get_images_url()
-    provider = "openai" if "api.openai.com" in url else "azure"
-
-    return ok(
-        provider=provider,
-        force=force,
-        deployment=dep,
-        imagesUrl=url,
-        has_OAI_KEY=bool(os.getenv("OAI_API_KEY")),
-        has_AZURE_TEXT=bool(
-            os.getenv("AZURE_OPENAI_ENDPOINT") and os.getenv("AZURE_OPENAI_API_KEY")
-        ),
-    )
+    return ok(**get_provider_info())
