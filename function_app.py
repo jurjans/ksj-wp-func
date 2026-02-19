@@ -116,7 +116,7 @@ def ok(**payload) -> func.HttpResponse:
     )
 
 from fb_gen import generate_fb_copy
-from worker import tick_once
+from article_worker import tick_once
 
 
 # =============================================================================
