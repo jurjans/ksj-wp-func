@@ -245,19 +245,57 @@ MAX_TOKENS_MAIN = int(os.getenv("WP_MAX_TOKENS", "25000"))
 FORCE_SHORT_MODE = (os.getenv("FORCE_SHORT_MODE", "false").lower() in {"1", "true", "yes"})
 
 ARTICLE_SYSTEM_PROMPT = (
-    "Tu esi B2B tehniskais rakstnieks un SharePoint konsultants, kas atgriež TIKAI derīgu JSON "
-    "pēc shēmas (title, seoSlug, excerpt, contentHtml, category, tags, tagSlugs, focusKeyword). "
-    "Raksti latviski ar diakritikām, bez clickbait, bez miglainiem apgalvojumiem.\n"
-    "KVALITĀTES RUBRIKA:\n"
-    "• Strukturētība: ievads (<h2>), 7-12 loģiskas sadaļas ar <h3>, "
-    "  2 saraksti (<ul>/<ol>, katrā 4-7 punkti), 1 īss <blockquote> (galvenā doma/ROI). \n"
-    "• Konkrētība: reāli SharePoint/Power Automate/Teams scenāriji ar praktiskiem soļiem un piemēriem. \n"
-    "• ROI: skaitļi kā diapazoni (piem., 15-30%) vai ietaupījums (stundas/€) ar īsu pamatojumu. \n"
-    "• Tonis: profesionāls, tiešs, uz iznākumu vērsts; CTA bez saitēm.\n"
-    "FORMATĒŠANA: Atļauts tikai <h2>,<h3>,<p>,<ul>,<ol>,<li>,<strong>,<em>,<code>,<pre>,<blockquote>,<br>. "
-    "NEDRĪKST <a> vai inline stili. \n"
-    "TAGI: 3-6 domēna termini latviski (jēdzieni/tehnikas), ne iekļauj kategoriju, auditoriju vai L1/L2/L3 marķierus. "
-    "Katram tagam dod ASCII slug (mazie burti, '-' starp vārdiem)."
+    "Tu esi Kaspars Jurjāns — Latvijas vadošais SharePoint un Microsoft 365 konsultants "
+    "ar 15+ gadu pieredzi un 200+ veiksmīgi īstenotiem projektiem. "
+    "Tu raksti padziļinātus tehniskus rakstus B2B auditorijai "
+    "(IT vadītāji, biznesa procesu īpašnieki) latviešu valodā.\n"
+    "Atgriez TIKAI derīgu JSON pēc shēmas: title, seoSlug, excerpt, contentHtml, "
+    "category, tags, tagSlugs, focusKeyword.\n\n"
+    "RAKSTĪŠANAS PRINCIPI:\n"
+    "1. Katru apgalvojumu pamato ar konkrētu scenāriju vai skaitli. "
+    "Neraksti 'uzlabo produktivitāti' — raksti 'samazina dokumentu meklēšanas laiku "
+    "no 12 minūtēm uz 45 sekundēm'.\n"
+    "2. Izmanto reālus Microsoft 365 terminus un UI elementus "
+    "(piem., 'Document Library → Settings → Versioning settings').\n"
+    "3. Katrai sadaļai ir struktūra: problēma → risinājums → soļi → rezultāts.\n"
+    "4. ROI datus sniedz kā diapazonus ar kontekstu "
+    "(piem., '15-30% mazāk laika pavada dokumentu saskaņošanai — "
+    "uzņēmumā ar 50+ darbiniekiem').\n"
+    "5. Neizmanto vārdus: 'var', 'iespējams', 'varētu' — aizstāj ar konkrētu instrukciju.\n\n"
+    "STRUKTURĒTĪBA:\n"
+    "• Ievads (<h2>) + 7-12 loģiskas sadaļas ar <h3>\n"
+    "• 2+ saraksti (<ul>/<ol>, katrā 4-7 punkti)\n"
+    "• 1 īss <blockquote> ar galveno domu/ROI kopsavilkumu\n"
+    "• Katra sadaļa beidzas ar pārejas teikumu uz nākamo\n\n"
+    "AIZLIEGTS: clickbait, AI-stilistika ('šajā rakstā aplūkosim'), "
+    "tukši solījumi, angliski heading nosaukumi, <a> birkas, inline stili.\n\n"
+    "FORMATĒŠANA: Atļauts tikai <h2>,<h3>,<p>,<ul>,<ol>,<li>,<strong>,<em>,"
+    "<code>,<pre>,<blockquote>,<br>.\n"
+    "TAGI: 3-6 domēna termini latviski (jēdzieni/tehnikas), ne iekļauj kategoriju, "
+    "auditoriju vai L1/L2/L3 marķierus. Katram tagam dod ASCII slug (mazie burti, '-' starp vārdiem)."
+)
+
+
+SECTION_SYSTEM_PROMPT = (
+    "Tu esi Kaspars Jurjāns — SharePoint un Microsoft 365 konsultants ar 15+ gadu pieredzi. "
+    "Raksti vienu raksta sadaļu latviski B2B auditorijai (IT vadītāji, biznesa procesu īpašnieki).\n"
+    "OBLIGĀTĀ STRUKTŪRA šai sadaļai:\n"
+    "• 1 ievada rindkopa: kāpēc šī tēma ir svarīga (ar konkrētu problēmu)\n"
+    "• 2-3 rindkopas ar praktiskiem soļiem (izmanto precīzus Microsoft 365 UI terminus, "
+    "piem., 'Document Library → Settings → Versioning settings')\n"
+    "• 1 saraksts (ul/ol) ar 4-7 punktiem\n"
+    "• 1 ROI rindkopa ar skaitļiem kā diapazoni (piem., '15-30% mazāk laika — uzņēmumā ar 50+ darbiniekiem')\n"
+    "• 1 noslēguma teikums, kas savieno ar nākamo sadaļu\n"
+    "KVALITĀTE: Katru apgalvojumu pamato ar scenāriju vai skaitli. "
+    "Neraksti 'uzlabo produktivitāti' — raksti 'samazina dokumentu meklēšanas laiku no 12 min uz 45 sek'. "
+    "Neizmanto vārdus: 'var', 'iespējams', 'varētu' — aizstāj ar konkrētu instrukciju.\n"
+    "AIZLIEGTS: clickbait, AI-stilistika ('šajā sadaļā aplūkosim'), tukši solījumi, <a> birkas, inline stili.\n"
+    "KONTEKSTS:\n"
+    "- Kategorija: {wpCategory}\n"
+    "- Focus keyword: {focusKeyword}\n"
+    "- Iepriekšējās sadaļas jau satur: {previousSections}\n"
+    "NEATKĀRTO tēmas, piemērus vai datus, kas jau ir iepriekšējās sadaļās.\n"
+    "Atgriez TIKAI JSON: {{\"sectionHtml\": \"<p>...</p>\"}}"
 )
 
 
@@ -565,24 +603,33 @@ def _chars_min_for_words(words: int) -> int:
     return max(1500, int(words * 5.2))
 
 
-def generate_section_html(meta: dict, h3_title: str, target_words: int) -> str:
+def generate_section_html(meta: dict, h3_title: str, target_words: int, previous_sections: list[str] | None = None) -> str:
     words = max(380, int(target_words))
     min_len = _chars_min_for_words(words)
 
+    prev_ctx = ", ".join(previous_sections) if previous_sections else "šī ir pirmā sadaļa"
+    focus_kw = meta.get("focusKeyword", "") or ""
+    wp_cat = meta.get("wpCategory", "") or "SharePoint"
+
+    system = SECTION_SYSTEM_PROMPT.format(
+        wpCategory=wp_cat,
+        focusKeyword=focus_kw or "(nav norādīts)",
+        previousSections=prev_ctx,
+    )
+
+    focus_hint = ""
+    if focus_kw:
+        focus_hint = f"\nFocus keyword '{focus_kw}' — iekļaut organiski 1-2 reizes šajā sadaļā."
+
     user = (
         f"Sadaļas virsraksts (H3): {h3_title}\n"
-        f"KATEGORISKI AIZLIEGTS atgriezt tikai 1-2 teikumus!\n"
-        f"OBLIGĀTI iekļaut:\n"
-        f"• 3-6 rindkopas ar praktiskiem piemēriem\n"
-        f"• 1 sarakstu (ul/ol) ar 4-7 konkrētiem punktiem\n"
-        f"• 1 īsu ROI rindkopu ar skaitļiem (% vai €)\n"
-        f"• Vismaz 2 konkrētus lietojumpiemērus\n"
         f"Mērķa garums: ~{target_words} vārdi.\n"
         f"Konteksts: {meta.get('primary')}, {meta.get('angle')}, {meta.get('audience')}"
+        f"{focus_hint}"
     )
     payload = {
         "messages": [
-            {"role": "system", "content": "Tu ģenerē tikai sadaļas HTML fragmentu; atļautās birkas kā pamatā."},
+            {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
         "max_tokens": 3500,
@@ -880,7 +927,19 @@ def validate_section_structure(html: str, h3_title: str) -> List[str]:
     return issues
 
 
-def generate_aggressive_section(meta: dict, h3_title: str, target_words: int, previous_issues: List[str]) -> str:
+def generate_aggressive_section(meta: dict, h3_title: str, target_words: int, previous_issues: List[str], previous_sections: list[str] | None = None) -> str:
+    prev_ctx = ", ".join(previous_sections) if previous_sections else "šī ir pirmā sadaļa"
+    focus_kw = meta.get("focusKeyword", "") or ""
+    wp_cat = meta.get("wpCategory", "") or "SharePoint"
+
+    system = (
+        "Tu esi Kaspars Jurjāns — SharePoint konsultants. "
+        "Iepriekšējais mēģinājums NEIZDEVĀS. Tagad raksti PILNĀ STRUKTŪRĀ — bez saīsinājumiem!\n"
+        f"Kategorija: {wp_cat}. Focus keyword: {focus_kw or '(nav)'}.\n"
+        f"Iepriekšējās sadaļas: {prev_ctx}\n"
+        "NEATKĀRTO jau aplūkotās tēmas. Atgriez TIKAI JSON: {\"sectionHtml\": \"<p>...</p>\"}"
+    )
+
     user = (
         f"KĻŪDA IEPRIEKŠ: {', '.join(previous_issues)}\n"
         f"Sadaļas virsraksts: {h3_title}\n"
@@ -898,10 +957,7 @@ def generate_aggressive_section(meta: dict, h3_title: str, target_words: int, pr
 
     payload = {
         "messages": [
-            {
-                "role": "system",
-                "content": "ESI STINGRS TEHNISKAIS RAKSTNIECIS. ATBILDI TIKAI PILNĀ STRUKTŪRĀ! NEDRĪKST atgriezt tikai 1-2 teikumus!",
-            },
+            {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
         "max_tokens": 3500,
@@ -914,9 +970,9 @@ def generate_aggressive_section(meta: dict, h3_title: str, target_words: int, pr
     return html
 
 
-def generate_section_html_with_validation(meta: dict, h3_title: str, target_words: int, max_retries: int = 2) -> str:
+def generate_section_html_with_validation(meta: dict, h3_title: str, target_words: int, max_retries: int = 2, previous_sections: list[str] | None = None) -> str:
     for attempt in range(max_retries):
-        html = generate_section_html(meta, h3_title, target_words)
+        html = generate_section_html(meta, h3_title, target_words, previous_sections=previous_sections)
         issues = validate_section_structure(html, h3_title)
 
         if not issues:
@@ -925,7 +981,7 @@ def generate_section_html_with_validation(meta: dict, h3_title: str, target_word
         logging.warning(f"Sadaļa '{h3_title}' neatbilst prasībām (mēģinājums {attempt+1}): {issues}")
 
         if attempt == max_retries - 1:
-            return generate_aggressive_section(meta, h3_title, target_words, issues)
+            return generate_aggressive_section(meta, h3_title, target_words, issues, previous_sections=previous_sections)
 
     return html
 
@@ -996,8 +1052,9 @@ def build_wp_article_from_item(item: dict) -> dict:
         per_section = calculate_section_words(target_words, len(h3_worklist))
 
         for idx, h in enumerate(h3_worklist):
+            prev_h3 = [title for title, _ in sections]  # already generated section titles
             try:
-                sec_html = generate_section_html_with_validation(meta, h, per_section)
+                sec_html = generate_section_html_with_validation(meta, h, per_section, previous_sections=prev_h3)
             except Exception as e:
                 logging.error(f"Sadaļas '{h}' ģenerēšana neizdevās: {e}")
                 sec_html = "<p>Šīs sadaļas ģenerēšanā radās grūtības, bet turpinām ar pārējo saturu.</p>"
@@ -1132,171 +1189,6 @@ def build_wp_article_from_item(item: dict) -> dict:
     finally:
         MAX_TOKENS_MAIN = original_max_tokens
 
-
-# ============================
-# SEO ENFORCERS v2 (deterministic, idempotent)
-# ============================
-import os, logging, re
-
-def _seo2_strip_html(text: str) -> str:
-    return re.sub(r"<[^>]+>", " ", text or "")
-
-def _seo2_starts_with_fk_text(html: str, fk: str) -> bool:
-    if not fk or not html:
-        return False
-    t = re.sub(r"\s+", " ", _seo2_strip_html(html)).strip().lower()
-    return t.startswith(fk.strip().lower())
-
-def _seo2_content_begin_with_fk(html: str, fk: str) -> str:
-    if not fk or not html:
-        return html or ""
-    if _seo2_starts_with_fk_text(html, fk):
-        return html
-    # prefix first <p>
-    m = re.search(r"(<p[^>]*>)(.*?)(</p>)", html, flags=re.I|re.S)
-    if m:
-        open_tag, inner, close_tag = m.group(1), m.group(2), m.group(3)
-        inner = re.sub(r"^\s+", "", inner)
-        if not inner.lower().startswith(fk.lower()):
-            return html[:m.start()] + open_tag + f"{fk} — {inner}" + close_tag + html[m.end():]
-        return html
-    # after </h2>
-    m2 = re.search(r"(</h2>)", html, flags=re.I)
-    if m2:
-        return html[:m2.end()] + f"<p>{fk} — </p>" + html[m2.end():]
-    return f"<p>{fk} — </p>" + html
-
-def _seo2_excerpt(excerpt: str, fk: str, n: int = 160) -> str:
-    ex = (excerpt or "").strip()
-    if fk:
-        if not ex.lower().startswith(fk.lower()):
-            ex = f"{fk} — {ex}" if ex else f"{fk} — kopsavilkums."
-    ex = re.sub(r"\s+", " ", ex).strip()
-    return ex[:n]
-
-def _seo2_title(title: str, fk: str, html: str, n: int = 60) -> str:
-    t = (title or "").strip()
-    if fk and not t.lower().startswith(fk.lower()):
-        t = f"{fk} {t}".strip()
-    if not re.search(r"\d", t):
-        h3c = len(re.findall(r"<h3\\b", html or "", flags=re.I))
-        num = max(5, h3c or 7)
-        t = re.sub(r"^(" + re.escape(fk or "") + r")\\b", r"\\1 — {0} soļi".format(num), t, count=1, flags=re.I) if fk else f"{t} — {num} soļi"
-        if not re.search(r"\d", t):
-            t = f"{t} — {num} soļi"
-    if len(t) > n:
-        t = t[:n].rstrip()
-    return t
-
-def _seo2_heading_inject(html: str, fk: str, min_with_fk: int = 3) -> str:
-    if not fk:
-        return html
-    heads = list(re.finditer(r'(<h[234][^>]*>)(.*?)(</h[234]>)', html or "", flags=re.I|re.S))
-    have = sum(1 for m in heads if re.search(re.escape(fk), m.group(2), flags=re.I))
-    need = max(0, min_with_fk - have)
-    if need == 0:
-        return html
-    out, last = [], 0
-    for m in heads:
-        out.append((html or "")[last:m.start()])
-        open_tag, inner, close_tag = m.group(1), m.group(2), m.group(3)
-        if need > 0 and not re.search(re.escape(fk), inner, flags=re.I):
-            inner = f"{inner} — {fk}"
-            need -= 1
-        out.append(open_tag + inner + close_tag)
-        last = m.end()
-    out.append((html or "")[last:])
-    return "".join(out)
-
-def _seo2_word_count(html: str) -> int:
-    return len(re.findall(r"\\S+", re.sub(r"<[^>]+>", " ", html or "")))
-
-def _seo2_densify(html: str, fk: str, target_pct: float = 1.0, tol: float = 0.2, cap: int = 30) -> str:
-    if not fk or not html:
-        return html or ""
-    total = _seo2_word_count(html)
-    if total <= 0:
-        return html
-    have = html.lower().count(fk.lower())
-    target = max(1, int(round(total * (target_pct / 100.0))))
-    min_needed = max(0, int((target_pct - tol) * total / 100.0) - have)
-    need = min(cap, max(min_needed, target - have))
-    if need <= 0:
-        return html
-    paras = list(re.finditer(r"(<p[^>]*>)(.*?)(</p>)", html, flags=re.I|re.S))
-    if not paras:
-        html = f"<p>{fk}</p>\\n" + html
-        paras = list(re.finditer(r"(<p[^>]*>)(.*?)(</p>)", html, flags=re.I|re.S))
-    out, last, ins = [], 0, 0
-    step = max(1, len(paras) // (need + 1))
-    for i, m in enumerate(paras):
-        out.append(html[last:m.start()])
-        open_tag, inner, close_tag = m.group(1), m.group(2), m.group(3)
-        if ins < need and not re.search(re.escape(fk), inner, flags=re.I) and ((i + 1) % step == 0):
-            inner_clean = inner.strip()
-            new_inner = f"{fk} — {inner_clean}" if (i // step) % 2 == 0 else f"{inner_clean} — {fk}"
-            out.append(open_tag + new_inner + close_tag)
-            ins += 1
-        else:
-            out.append(m.group(0))
-        last = m.end()
-    out.append(html[last:])
-    return "".join(out)
-
-def _seo2_focus_slug(s: str) -> str:
-    try:
-        return slugify(s or "")
-    except Exception:
-        return ""
-
-def _seo2_url_total(data: dict, target_len: int = 75) -> dict:
-    base = (os.getenv("WP_PUBLIC_BASE_URL") or os.getenv("WP_BASE_URL") or "").strip().rstrip("/")
-    slug = _seo2_focus_slug(data.get("seoSlug") or data.get("title") or "")
-    fk_slug = _seo2_focus_slug(data.get("focusKeyword", ""))
-    if fk_slug and fk_slug not in slug:
-        slug = f"{fk_slug}-{slug}".strip("-")
-    if base:
-        prefix = base + "/"
-        max_slug_len = max(1, target_len - len(prefix))
-        if len(slug) > max_slug_len:
-            slug = slug[:max_slug_len].rstrip("-")
-        elif len(slug) < max_slug_len:
-            extras = [w for w in (_seo2_focus_slug(data.get("title","")).split("-") + fk_slug.split("-")) if w]
-            i = 0
-            while len(slug) < max_slug_len and extras:
-                w = extras[i % len(extras)]
-                add = "-" + w
-                if len(slug) + len(add) > max_slug_len:
-                    add = "-" + w[:max(1, max_slug_len - len(slug) - 1)]
-                slug += add
-                i += 1
-            if len(slug) < max_slug_len:
-                slug += "x" * (max_slug_len - len(slug))
-        data["seoSlug"] = slug
-        data["fullUrl"] = prefix + slug
-    else:
-        data["seoSlug"] = slug[:75]
-    return data
-
-def _apply_seo_enforcers_v2(data: dict) -> dict:
-    fk = (data.get("focusKeyword") or "").strip()
-    # excerpt
-    data["excerpt"] = _seo2_excerpt(data.get("excerpt", ""), fk, 160)
-    # content begin + headings + densify
-    html = data.get("contentHtml", "") or ""
-    html = _seo2_content_begin_with_fk(html, fk)
-    html = _seo2_heading_inject(html, fk, min_with_fk=3)
-    html = _seo2_densify(html, fk, target_pct=1.0, tol=0.2, cap=30)
-    data["contentHtml"] = html
-    # title
-    data["title"] = _seo2_title(data.get("title", ""), fk, html, 60)
-    # url total length
-    try:
-        total = int(os.getenv("WP_TOTAL_URL_LEN", "75"))
-    except Exception:
-        total = 75
-    data = _seo2_url_total(data, target_len=total)
-    return data
 
 # Pievienojiet šo funkciju article_gen.py galā (pārņem pilnībā; tai nav ārēju atkarību,
 # izņemot opcionalo pytrends/SerpApi un chat_json, ja tie ir pieejami jūsu vidē).
