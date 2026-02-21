@@ -46,6 +46,9 @@ from article_gen import (
     slugify,
     sanitize_html,
     normalize_lv_headings,
+    normalize_tags,
+    build_wp_article_mega,
+    ARTICLE_MODE,
 )
 
 
@@ -86,7 +89,8 @@ def _phase_sections(op_id: str, state: dict, meta: dict, target_words: int) -> d
     if i < total:
         per_sec = calculate_section_words(target_words, total)
         h3_title = h3[i]
-        html = generate_section_html_with_validation(meta, h3_title, per_sec)
+        prev_h3 = [s["h3"] for s in state.get("sections", [])]  # already generated
+        html = generate_section_html_with_validation(meta, h3_title, per_sec, previous_sections=prev_h3)
 
         words_now = count_words_from_html(html)
         need = int(per_sec * TOPUP_THRESHOLD) - words_now
@@ -236,12 +240,62 @@ def _phase_finalize(op_id: str, state: dict, meta: dict, target_words: int) -> d
 
 
 # =============================================================================
+# Mega-prompt phase (single-call, completes in one tick)
+# =============================================================================
+def _phase_mega(op_id: str, state: dict, meta: dict, target_words: int) -> dict:
+    """Generate complete article in one API call using mega-prompt."""
+    progress(op_id, "mega", 0, 1)
+
+    data = build_wp_article_mega(meta, target_words)
+
+    # Apply tag normalization + WP tag IDs (same as finalize)
+    data = normalize_tags(data, meta)
+    try:
+        names = data.get("tags") or []
+        slugs = data.get("tagSlugs") or []
+        if names and slugs and not data.get("wpTagIds"):
+            if WP_API_BASE:
+                data["wpTagIds"] = ensure_wp_tag_ids(
+                    WP_API_BASE, WP_TOKEN, names=names, slugs=slugs,
+                )
+            else:
+                data["wpTagIds"] = []
+    except Exception as _e:
+        logging.warning(f"[wpTagIds] mega mode failed: {_e}")
+        data["wpTagIds"] = data.get("wpTagIds") or []
+
+    if "wpTagIds" not in data or data["wpTagIds"] is None:
+        data["wpTagIds"] = []
+
+    # Store result blob
+    bc = get_blob_client(op_id)
+    bc.upload_blob(
+        json.dumps(data, ensure_ascii=False).encode("utf-8"),
+        overwrite=True,
+    )
+    blob_path = f"{RESULT_CONTAINER}/{op_id}.json"
+    sas = make_sas_url(op_id)
+    status_upsert(op_id, "done", blobPath=blob_path, blobUrl=sas or "")
+
+    # Clean up work blob
+    try:
+        get_work_blob_client(op_id).delete_blob()
+    except Exception:
+        pass
+
+    state["phase"] = "done"
+    state_save(op_id, state)
+    return state
+
+
+# =============================================================================
 # Main entry point
 # =============================================================================
 PHASE_HANDLERS = {
     "outline": _phase_outline,
     "sections": _phase_sections,
     "finalize": _phase_finalize,
+    "mega": _phase_mega,
 }
 
 
@@ -255,6 +309,18 @@ def tick_once(op_id: str) -> dict:
     state = state_load(op_id)
     if not state:
         raise RuntimeError("Job state missing")
+
+    # Route to mega mode if configured (on first tick, override phase)
+    if state["phase"] == "outline":
+        item = state["item"]
+        picked = pick_item(item) if isinstance(item, dict) else item
+        mode = (
+            (picked.get("articleMode") if isinstance(picked, dict) else None)
+            or ARTICLE_MODE
+        ).strip().lower()
+        if mode == "mega":
+            state["phase"] = "mega"
+            logging.info(f"[worker] Routing job {op_id} to MEGA mode")
 
     status_upsert(op_id, "working", phase=state["phase"])
 

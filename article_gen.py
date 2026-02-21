@@ -986,6 +986,143 @@ def generate_section_html_with_validation(meta: dict, h3_title: str, target_word
     return html
 
 
+ARTICLE_MODE = (os.getenv("ARTICLE_MODE", "multi") or "multi").strip().lower()
+
+# =============================================================================
+# MEGA-PROMPT: single-call article generation (Plan C)
+# =============================================================================
+
+MEGA_SYSTEM_PROMPT = (
+    "Tu esi Kaspars Jurjāns — Latvijas vadošais SharePoint un Microsoft 365 konsultants "
+    "(15+ gadu pieredze, 200+ veiksmīgi projekti). Tu raksti vienu padziļinātu B2B tehnisku "
+    "rakstu latviešu valodā.\n\n"
+    "AUDITORIJA: IT vadītāji un biznesa procesu īpašnieki Latvijā un Baltijā "
+    "(uzņēmumi ar 50-500 darbiniekiem).\n\n"
+    "RAKSTA STRUKTŪRA (obligāti):\n"
+    "• 1 ievads ar <h2>: problēmas definīcija un kāpēc tā ir aktuāla (150-200 vārdi)\n"
+    "• 8-10 sadaļas ar <h3>: katra satur problēmu → risinājumu → soļus → ROI (250-350 vārdi katra)\n"
+    "• 2+ saraksti (<ul>/<ol>) visā rakstā ar 4-7 punktiem katrā\n"
+    "• 1 <blockquote> ar galveno ROI kopsavilkumu\n"
+    "• Katra sadaļa beidzas ar pārejas teikumu uz nākamo\n\n"
+    "KVALITĀTES STANDARTI:\n"
+    "• Katrs apgalvojums pamatos ar scenāriju VAI skaitli\n"
+    "• Visi skaitļi ir diapazoni ar kontekstu (piem., '15-30% mazāk laika — uzņēmumā ar 50+ darbiniekiem')\n"
+    "• Praktiski soļi izmanto precīzus Microsoft 365 UI terminus "
+    "(piem., 'Document Library → Settings → Versioning settings')\n"
+    "• Focus keyword: organiski 1-1.5% blīvumā (NEmehāniski ievadīts)\n\n"
+    "RAKSTĪŠANAS PRINCIPI:\n"
+    "1. Neraksti 'uzlabo produktivitāti' — raksti 'samazina dokumentu meklēšanas laiku no 12 min uz 45 sek'\n"
+    "2. Neizmanto vārdus: 'var', 'iespējams', 'varētu' — aizstāj ar konkrētu instrukciju\n"
+    "3. Katrai sadaļai struktūra: problēma → risinājums → soļi → rezultāts\n\n"
+    "AIZLIEGTS: 'šajā rakstā aplūkosim', angliski heading, clickbait, tukši CTA, <a> birkas, inline stili.\n\n"
+    "FORMATĒŠANA: Atļauts tikai <h2>,<h3>,<p>,<ul>,<ol>,<li>,<strong>,<em>,<code>,<pre>,<blockquote>,<br>.\n"
+    "TAGI: 3-6 domēna termini latviski. Katram tagam dod ASCII slug.\n\n"
+    "ATBILDI TIKAI AR DERĪGU JSON."
+)
+
+MEGA_USER_TEMPLATE = (
+    "Raksts: {title}\n"
+    "Tēma: {primary}\n"
+    "Leņķis: {angle}\n"
+    "Auditorija: {audience}\n"
+    "Focus keyword: {focusKeyword}\n"
+    "Kategorija: {wpCategory}\n"
+    "Mērķa garums: {targetWords} vārdi\n\n"
+    "JSON shēma:\n"
+    '{{\n'
+    '  "title": "max 60 rakstz., sākas ar focus keyword, satur skaitli",\n'
+    '  "seoSlug": "ascii-lowercase-bez-diakritikam",\n'
+    '  "excerpt": "max 160 rakstz., sākas ar focus keyword",\n'
+    '  "contentHtml": "<h2>Ievads</h2><p>...</p><h3>...</h3><p>...</p>...",\n'
+    '  "category": "{wpCategory}",\n'
+    '  "tags": ["3-6 latviski termini"],\n'
+    '  "tagSlugs": ["ascii-slug"],\n'
+    '  "focusKeyword": "{focusKeyword}"\n'
+    '}}'
+)
+
+
+def build_wp_article_mega(meta: dict, target_words: int) -> dict:
+    """
+    Generate a complete article in ONE API call using the mega-prompt approach.
+    Returns the same dict structure as build_wp_article_from_item.
+    """
+    focus_keyword = meta.get("focusKeyword", "") or ""
+    title_hint = meta.get("titleHint", "") or ""
+
+    user_msg = MEGA_USER_TEMPLATE.format(
+        title=title_hint,
+        primary=meta.get("primary", ""),
+        angle=meta.get("angle", ""),
+        audience=meta.get("audience", ""),
+        focusKeyword=focus_keyword,
+        wpCategory=meta.get("wpCategory", "SharePoint"),
+        targetWords=target_words,
+    )
+
+    max_tokens = get_dynamic_max_tokens(target_words)
+
+    payload = {
+        "messages": [
+            {"role": "system", "content": MEGA_SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.4,
+        "response_format": response_format_for_model(target_words),
+    }
+
+    logging.info(f"[mega] Starting single-call generation, target={target_words} words, max_tokens={max_tokens}")
+    data = chat_json(payload)
+
+    # Minimal post-processing (sanitize, don't rewrite)
+    data["contentHtml"] = sanitize_html(normalize_lv_headings(data.get("contentHtml", "")))
+    data["seoSlug"] = slugify(data.get("seoSlug") or data.get("title", ""))
+
+    if not data.get("category"):
+        data["category"] = meta.get("wpCategory") or "SharePoint"
+    if not data.get("focusKeyword"):
+        data["focusKeyword"] = focus_keyword
+
+    # One quality check + retry with feedback if needed
+    issues = quality_issues(data, target_words)
+    if issues:
+        logging.info(f"[mega] Quality issues found, retrying: {issues}")
+        retry_msg = (
+            f"Kļūdas iepriekšējā versijā:\n"
+            + "\n".join(f"- {i}" for i in issues)
+            + "\n\nIZLABO tieši šīs kļūdas, paturot pārējo saturu. Atgriez pilnu labotu JSON."
+        )
+        retry_payload = {
+            "messages": [
+                {"role": "system", "content": MEGA_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+                {"role": "assistant", "content": json.dumps(data, ensure_ascii=False)[:60000]},
+                {"role": "user", "content": retry_msg},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.2,
+            "response_format": response_format_for_model(target_words),
+        }
+        try:
+            data2 = chat_json(retry_payload)
+            data2["contentHtml"] = sanitize_html(normalize_lv_headings(data2.get("contentHtml", "")))
+            data2["seoSlug"] = slugify(data2.get("seoSlug") or data2.get("title", ""))
+            if not data2.get("category"):
+                data2["category"] = meta.get("wpCategory") or "SharePoint"
+            if not data2.get("focusKeyword"):
+                data2["focusKeyword"] = focus_keyword
+            data = data2
+            logging.info("[mega] Retry completed")
+        except Exception as e:
+            logging.warning(f"[mega] Retry failed, using first version: {e}")
+
+    final_words = count_words_from_html(data.get("contentHtml", ""))
+    logging.info(f"[mega] Done: {final_words} words (target {target_words})")
+
+    return data
+
+
 def build_wp_article_from_item(item: dict) -> dict:
     incoming = item or {}
     picked = pick_item(incoming)
@@ -1004,6 +1141,28 @@ def build_wp_article_from_item(item: dict) -> dict:
     missing = [k for k in ("primary", "angle", "audience") if not meta.get(k)]
     if missing:
         raise RuntimeError(f"Missing required fields: {', '.join(missing)}")
+
+    # Route to mega-prompt mode if configured
+    mode = (picked.get("articleMode") or ARTICLE_MODE).strip().lower()
+    if mode == "mega":
+        logging.info(f"[build] Using MEGA mode for article generation (target={target_words})")
+        data = build_wp_article_mega(meta, target_words)
+        # Apply same post-processing as multi-call path
+        data = normalize_tags(data, meta)
+        try:
+            names = data.get("tags") or []
+            slugs = data.get("tagSlugs") or []
+            if names and slugs and not data.get("wpTagIds"):
+                api_base = os.environ.get("WP_API_BASE")
+                if api_base:
+                    token = os.getenv("WP_TOKEN", "")
+                    data["wpTagIds"] = ensure_wp_tag_ids(api_base, token, names=names, slugs=slugs)
+                else:
+                    data["wpTagIds"] = []
+        except Exception as _e:
+            logging.warning(f"[wpTagIds] mega mode failed: {_e}")
+            data["wpTagIds"] = data.get("wpTagIds") or []
+        return data
 
     dynamic_max_tokens = get_dynamic_max_tokens(target_words)
     global MAX_TOKENS_MAIN
