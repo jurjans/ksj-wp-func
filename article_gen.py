@@ -883,7 +883,8 @@ def get_dynamic_max_tokens(target_words: int) -> int:
     base_tokens = 12000
     additional_per_thousand = 2000
     extra_tokens = (target_words // 1000) * additional_per_thousand
-    return min(40000, base_tokens + extra_tokens)
+    # Azure OpenAI GPT-4o max output is 16384 tokens
+    return min(16384, base_tokens + extra_tokens)
 
 
 def ensure_length_progress(current_html: str, target_words: int, phase: str) -> str:
@@ -1062,6 +1063,8 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
 
     max_tokens = get_dynamic_max_tokens(target_words)
 
+    # Mega mode uses simpler json_object format to avoid Azure strict schema
+    # restrictions with large minLength values on contentHtml
     payload = {
         "messages": [
             {"role": "system", "content": MEGA_SYSTEM_PROMPT},
@@ -1069,7 +1072,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
         ],
         "max_tokens": max_tokens,
         "temperature": 0.4,
-        "response_format": response_format_for_model(target_words),
+        "response_format": {"type": "json_object"},
     }
 
     logging.info(f"[mega] Starting single-call generation, target={target_words} words, max_tokens={max_tokens}")
@@ -1102,7 +1105,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
             ],
             "max_tokens": max_tokens,
             "temperature": 0.2,
-            "response_format": response_format_for_model(target_words),
+            "response_format": {"type": "json_object"},
         }
         try:
             data2 = chat_json(retry_payload)
