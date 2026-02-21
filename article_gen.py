@@ -990,25 +990,19 @@ def generate_section_html_with_validation(meta: dict, h3_title: str, target_word
 ARTICLE_MODE = (os.getenv("ARTICLE_MODE", "multi") or "multi").strip().lower()
 
 # =============================================================================
-# MEGA-PROMPT: single-call article generation (Plan C)
+# MEGA-PROMPT: hybrid article generation (Plan C v2)
+# Phase 1: outline + meta + intro (1 call)
+# Phase 2: sections in batches of 3-4 (2-3 calls)
+# Phase 3: assembly + quality check
+# Total: 3-5 API calls with full cross-section context
 # =============================================================================
 
 MEGA_SYSTEM_PROMPT = (
     "Tu esi Kaspars Jurjāns — Latvijas vadošais SharePoint un Microsoft 365 konsultants "
-    "(15+ gadu pieredze, 200+ veiksmīgi projekti). Tu raksti vienu padziļinātu B2B tehnisku "
-    "rakstu latviešu valodā.\n\n"
+    "(15+ gadu pieredze, 200+ veiksmīgi projekti). Tu raksti padziļinātus B2B tehniskus "
+    "rakstus latviešu valodā.\n\n"
     "AUDITORIJA: IT vadītāji un biznesa procesu īpašnieki Latvijā un Baltijā "
     "(uzņēmumi ar 50-500 darbiniekiem).\n\n"
-    "⚠️ KRITISKA PRASĪBA — GARUMS:\n"
-    "Tu OBLIGĀTI ievēro lietotāja norādīto sadaļu skaitu un vārdu skaitu katrā sadaļā.\n"
-    "Katra sadaļa satur VISMAZ norādīto vārdu skaitu — ar pilnām rindkopām, sarakstiem un piemēriem.\n"
-    "Īsāks raksts ir NORAIDĪTS. Nesamazini. Neapkopo. Raksti PILNĀ detalizācijā.\n\n"
-    "RAKSTA STRUKTŪRA (obligāti):\n"
-    "• 1 ievads ar <h2>: problēmas definīcija un kāpēc tā ir aktuāla\n"
-    "• N sadaļas ar <h3> (skaitu norāda lietotājs): katra satur problēmu → risinājumu → soļus → ROI\n"
-    "• Katra sadaļa OBLIGĀTI iekļauj: 2-3 rindkopas ar tekstu + 1 sarakstu (<ul>/<ol> ar 4-6 punktiem)\n"
-    "• 1 <blockquote> ar galveno ROI kopsavilkumu (jebkurā vietā rakstā)\n"
-    "• Katra sadaļa beidzas ar pārejas teikumu uz nākamo\n\n"
     "KVALITĀTES STANDARTI:\n"
     "• Katrs apgalvojums pamatos ar scenāriju VAI skaitli\n"
     "• Visi skaitļi ir diapazoni ar kontekstu (piem., '15-30% mazāk laika — uzņēmumā ar 50+ darbiniekiem')\n"
@@ -1020,32 +1014,26 @@ MEGA_SYSTEM_PROMPT = (
     "2. Neizmanto vārdus: 'var', 'iespējams', 'varētu' — aizstāj ar konkrētu instrukciju\n"
     "3. Katrai sadaļai struktūra: problēma → risinājums → soļi → rezultāts\n\n"
     "AIZLIEGTS: 'šajā rakstā aplūkosim', angliski heading, clickbait, tukši CTA, <a> birkas, inline stili.\n\n"
-    "FORMATĒŠANA: Atļauts tikai <h2>,<h3>,<p>,<ul>,<ol>,<li>,<strong>,<em>,<code>,<pre>,<blockquote>,<br>.\n"
-    "TAGI: 3-6 domēna termini latviski. Katram tagam dod ASCII slug.\n\n"
+    "FORMATĒŠANA: Atļauts tikai <h2>,<h3>,<p>,<ul>,<ol>,<li>,<strong>,<em>,<code>,<pre>,<blockquote>,<br>.\n\n"
     "ATBILDI TIKAI AR DERĪGU JSON."
 )
 
-MEGA_USER_TEMPLATE = (
-    "Raksts: {title}\n"
+MEGA_OUTLINE_USER = (
     "Tēma: {primary}\n"
     "Leņķis: {angle}\n"
     "Auditorija: {audience}\n"
+    "Titula hints: {titleHint}\n"
     "Focus keyword: {focusKeyword}\n"
-    "Kategorija: {wpCategory}\n\n"
-    "⚠️ OBLIGĀTĀ STRUKTŪRA UN GARUMS:\n"
-    "• Ievads (<h2>): {introWords} vārdi — problēmas definīcija\n"
-    "• {sectionCount} sadaļas (<h3>): katra VISMAZ {wordsPerSection} vārdi\n"
-    "• Kopā: VISMAZ {targetWords} vārdi (minimums {minWords})\n"
-    "• Katra sadaļa OBLIGĀTI satur: 2-3 rindkopas + 1 sarakstu (ul/ol ar 4-6 punktiem) + ROI datus\n"
-    "• NEDRĪKST saīsināt, apkopot vai izlaist sadaļas\n\n"
+    "Kategorija: {wpCategory}\n"
+    "Mērķa garums: {targetWords} vārdi\n\n"
+    "UZDEVUMS: Izveido raksta plānu un ievadu.\n\n"
     "JSON shēma:\n"
     '{{\n'
     '  "title": "max 60 rakstz., sākas ar focus keyword, satur skaitli",\n'
     '  "seoSlug": "ascii-lowercase-bez-diakritikam",\n'
     '  "excerpt": "max 160 rakstz., sākas ar focus keyword",\n'
-    '  "contentHtml": "<h2>Ievads ({introWords}+ vārdi)</h2><p>...</p>'
-    '<h3>1. sadaļa ({wordsPerSection}+ vārdi)</h3><p>...</p><ul><li>...</li></ul><p>...</p>'
-    '... atkārto {sectionCount} reizes ...",\n'
+    '  "introHtml": "<h2>Ievads</h2><p>150-200 vārdi: problēmas definīcija, kāpēc aktuāla</p>",\n'
+    '  "h3": ["8 konkrēti, darbīgi virsraksti latviski — katrs ar unikālu apakštēmu"],\n'
     '  "category": "{wpCategory}",\n'
     '  "tags": ["3-6 latviski termini"],\n'
     '  "tagSlugs": ["ascii-slug"],\n'
@@ -1053,145 +1041,208 @@ MEGA_USER_TEMPLATE = (
     '}}'
 )
 
+MEGA_BATCH_USER = (
+    "Raksta konteksts:\n"
+    "Tēma: {primary} | Leņķis: {angle} | Focus keyword: {focusKeyword}\n"
+    "Raksta virsraksts: {title}\n\n"
+    "Jau uzrakstītās sadaļas (neatkārto!):\n{previousContent}\n\n"
+    "UZDEVUMS: Uzraksti PILNĀ DETALIZĀCIJĀ šīs {batchCount} sadaļas:\n{batchSections}\n\n"
+    "Katra sadaļa OBLIGĀTI satur:\n"
+    "• 2-3 rindkopas ar pilnām detaļām un Microsoft 365 UI soļiem\n"
+    "• 1 sarakstu (<ul>/<ol>) ar 4-6 praktiskiem punktiem\n"
+    "• 1 ROI rindkopu ar konkrētiem skaitļiem\n"
+    "• 1 pārejas teikumu uz nākamo sadaļu\n"
+    "• VISMAZ {wordsPerSection} vārdi katrā sadaļā\n\n"
+    "Atgriez JSON:\n"
+    '{{\n'
+    '  "sections": [\n'
+    '    {{"h3": "virsraksts", "html": "<p>pilns saturs...</p><ul><li>...</li></ul><p>ROI...</p>"}}\n'
+    '  ]\n'
+    '}}'
+)
+
+
+def _summarize_previous(intro_html: str, sections: list[dict], max_chars: int = 2000) -> str:
+    """Build a compact summary of already-written content for context."""
+    parts = []
+    if intro_html:
+        text = re.sub(r'<[^>]+>', ' ', intro_html).strip()
+        words = text.split()[:30]
+        parts.append(f"Ievads: {' '.join(words)}...")
+    for s in sections:
+        text = re.sub(r'<[^>]+>', ' ', s.get('html', '')).strip()
+        words = text.split()[:20]
+        parts.append(f"<{s['h3']}>: {' '.join(words)}...")
+    summary = "\n".join(parts)
+    return summary[:max_chars] if len(summary) > max_chars else summary
+
 
 def build_wp_article_mega(meta: dict, target_words: int) -> dict:
     """
-    Generate a complete article in ONE API call using the mega-prompt approach.
-    Returns the same dict structure as build_wp_article_from_item.
+    Hybrid article generation: outline (1 call) + sections in batches (2-3 calls).
+    Total: 3-5 API calls with full cross-section context.
     """
-    # Cap target for mega mode — GPT-4o can reliably produce ~3000-4000 words in one call
     MEGA_MAX_WORDS = int(os.getenv("MEGA_MAX_WORDS", "4000"))
     if target_words > MEGA_MAX_WORDS:
-        logging.info(f"[mega] Capping target from {target_words} to {MEGA_MAX_WORDS} (mega mode limit)")
+        logging.info(f"[mega] Capping target from {target_words} to {MEGA_MAX_WORDS}")
         target_words = MEGA_MAX_WORDS
-
-    # Calculate section parameters to achieve target word count
-    section_count = max(6, min(12, target_words // 250))
-    words_per_section = target_words // section_count
-    intro_words = max(150, target_words // 10)
 
     focus_keyword = meta.get("focusKeyword", "") or ""
     title_hint = meta.get("titleHint", "") or ""
+    max_tokens = get_dynamic_max_tokens(target_words)
 
-    user_msg = MEGA_USER_TEMPLATE.format(
-        title=title_hint,
+    # ── Phase 1: Outline + intro ──────────────────────────────────────────
+    logging.info(f"[mega] Phase 1: Generating outline, target={target_words}")
+    outline_msg = MEGA_OUTLINE_USER.format(
         primary=meta.get("primary", ""),
         angle=meta.get("angle", ""),
         audience=meta.get("audience", ""),
+        titleHint=title_hint,
         focusKeyword=focus_keyword,
         wpCategory=meta.get("wpCategory", "SharePoint"),
         targetWords=target_words,
-        minWords=int(target_words * 0.85),
-        sectionCount=section_count,
-        wordsPerSection=words_per_section,
-        introWords=intro_words,
     )
 
-    max_tokens = get_dynamic_max_tokens(target_words)
-
-    # Mega mode uses simpler json_object format to avoid Azure strict schema
-    # restrictions with large minLength values on contentHtml
-    payload = {
+    outline_data = chat_json({
         "messages": [
             {"role": "system", "content": MEGA_SYSTEM_PROMPT},
-            {"role": "user", "content": user_msg},
+            {"role": "user", "content": outline_msg},
         ],
-        "max_tokens": max_tokens,
-        "temperature": 0.4,
+        "max_tokens": 3000,
+        "temperature": 0.3,
         "response_format": {"type": "json_object"},
+    })
+
+    title = outline_data.get("title") or title_hint or "SharePoint risinājumi"
+    intro_html = outline_data.get("introHtml") or "<h2>Ievads</h2><p>-</p>"
+    h3_list = [h.strip() for h in outline_data.get("h3", []) if isinstance(h, str) and h.strip()]
+
+    if len(h3_list) < 4:
+        h3_list = [
+            "Biznesa vajadzības un mērķi",
+            "Informācijas arhitektūra",
+            "Automatizācija ar Power Automate",
+            "Drošība un piekļuves kontrole",
+            "Datu kvalitāte un metadati",
+            "Izvietošana un pārvaldība",
+            "Mērījumi un ROI",
+            "Nākamie soļi",
+        ]
+
+    logging.info(f"[mega] Outline: title='{title[:50]}...', {len(h3_list)} sections")
+
+    # ── Phase 2: Generate sections in batches ─────────────────────────────
+    BATCH_SIZE = int(os.getenv("MEGA_BATCH_SIZE", "4"))
+    words_per_section = max(200, target_words // len(h3_list))
+    all_sections: list[dict] = []
+
+    for batch_start in range(0, len(h3_list), BATCH_SIZE):
+        batch_h3 = h3_list[batch_start:batch_start + BATCH_SIZE]
+        batch_num = batch_start // BATCH_SIZE + 1
+
+        prev_summary = _summarize_previous(intro_html, all_sections)
+        batch_sections_text = "\n".join(
+            f"  {i+1}. <h3>{h}</h3>" for i, h in enumerate(batch_h3)
+        )
+
+        batch_msg = MEGA_BATCH_USER.format(
+            primary=meta.get("primary", ""),
+            angle=meta.get("angle", ""),
+            focusKeyword=focus_keyword,
+            title=title,
+            previousContent=prev_summary or "Šī ir pirmā sadaļu grupa.",
+            batchCount=len(batch_h3),
+            batchSections=batch_sections_text,
+            wordsPerSection=words_per_section,
+        )
+
+        logging.info(f"[mega] Phase 2, batch {batch_num}: generating {len(batch_h3)} sections ({', '.join(h[:30] for h in batch_h3)})")
+
+        batch_data = chat_json({
+            "messages": [
+                {"role": "system", "content": MEGA_SYSTEM_PROMPT},
+                {"role": "user", "content": batch_msg},
+            ],
+            "max_tokens": min(max_tokens, 8000),
+            "temperature": 0.4,
+            "response_format": {"type": "json_object"},
+        })
+
+        # Parse batch response
+        raw_sections = batch_data.get("sections", [])
+        if not raw_sections and batch_data.get("sectionHtml"):
+            # Fallback: single section returned
+            raw_sections = [{"h3": batch_h3[0], "html": batch_data["sectionHtml"]}]
+
+        for idx, sec in enumerate(raw_sections):
+            h3 = sec.get("h3") or (batch_h3[idx] if idx < len(batch_h3) else f"Sadaļa {batch_start + idx + 1}")
+            html = sec.get("html") or sec.get("sectionHtml") or ""
+            if html.strip():
+                all_sections.append({"h3": h3, "html": html})
+                words = count_words_from_html(html)
+                logging.info(f"[mega]   Section '{h3[:40]}': {words} words")
+
+        # If batch returned fewer sections than requested, generate missing ones individually
+        if len(raw_sections) < len(batch_h3):
+            for missing_idx in range(len(raw_sections), len(batch_h3)):
+                missing_h3 = batch_h3[missing_idx]
+                logging.warning(f"[mega]   Missing section '{missing_h3}', generating individually")
+                try:
+                    prev_summary = _summarize_previous(intro_html, all_sections)
+                    individual_msg = MEGA_BATCH_USER.format(
+                        primary=meta.get("primary", ""),
+                        angle=meta.get("angle", ""),
+                        focusKeyword=focus_keyword,
+                        title=title,
+                        previousContent=prev_summary,
+                        batchCount=1,
+                        batchSections=f"  1. <h3>{missing_h3}</h3>",
+                        wordsPerSection=words_per_section,
+                    )
+                    ind_data = chat_json({
+                        "messages": [
+                            {"role": "system", "content": MEGA_SYSTEM_PROMPT},
+                            {"role": "user", "content": individual_msg},
+                        ],
+                        "max_tokens": 3000,
+                        "temperature": 0.4,
+                        "response_format": {"type": "json_object"},
+                    })
+                    ind_sections = ind_data.get("sections", [])
+                    if ind_sections:
+                        html = ind_sections[0].get("html") or ""
+                        if html.strip():
+                            all_sections.append({"h3": missing_h3, "html": html})
+                except Exception as e:
+                    logging.warning(f"[mega]   Individual generation failed for '{missing_h3}': {e}")
+
+    # ── Phase 3: Assembly ─────────────────────────────────────────────────
+    content_parts = [intro_html.strip()] if intro_html else []
+    for s in all_sections:
+        content_parts.append(f"<h3>{s['h3']}</h3>\n{s['html']}")
+    content_html = sanitize_html(normalize_lv_headings("\n\n".join(content_parts)))
+
+    total_words = count_words_from_html(content_html)
+    logging.info(f"[mega] Assembly: {total_words} words from {len(all_sections)} sections (target {target_words})")
+
+    # Build final data dict
+    data = {
+        "title": title,
+        "seoSlug": slugify(outline_data.get("seoSlug") or title),
+        "excerpt": outline_data.get("excerpt") or "",
+        "contentHtml": content_html,
+        "category": outline_data.get("category") or meta.get("wpCategory") or "SharePoint",
+        "tags": outline_data.get("tags") or [],
+        "tagSlugs": outline_data.get("tagSlugs") or [slugify(t) for t in (outline_data.get("tags") or [])],
+        "focusKeyword": focus_keyword,
     }
 
-    logging.info(f"[mega] Starting single-call generation, target={target_words}, sections={section_count}x{words_per_section}w, max_tokens={max_tokens}")
-    data = chat_json(payload)
-
-    # Minimal post-processing (sanitize, don't rewrite)
-    data["contentHtml"] = sanitize_html(normalize_lv_headings(data.get("contentHtml", "")))
-    data["seoSlug"] = slugify(data.get("seoSlug") or data.get("title", ""))
-
-    if not data.get("category"):
-        data["category"] = meta.get("wpCategory") or "SharePoint"
-    if not data.get("focusKeyword"):
-        data["focusKeyword"] = focus_keyword
-
-    # Length check — if severely short vs REAL target, do a dedicated expansion retry
-    first_words = count_words_from_html(data.get("contentHtml", ""))
-    logging.info(f"[mega] First attempt: {first_words} words (real target {target_words})")
-
-    if first_words < int(target_words * 0.70):
-        logging.warning(f"[mega] Article too short ({first_words}/{target_words}), expanding...")
-        expand_msg = (
-            f"Raksts ir PĀRĀK ĪSS: tikai {first_words} vārdi no nepieciešamajiem {target_words}.\n"
-            f"Trūkst {target_words - first_words} vārdu.\n\n"
-            f"UZDEVUMS: Pārraksti rakstu PILNĀ garumā. Katrai no 8-10 sadaļām jābūt 250-400 vārdiem.\n"
-            f"Pievieno katrā sadaļā:\n"
-            f"• Papildu praktiskos piemērus ar Microsoft 365 UI soļiem\n"
-            f"• Detalizētākus scenārijus un konfigurācijas aprakstus\n"
-            f"• ROI datus ar konkrētiem skaitļiem\n"
-            f"• Sarakstus ar 5-7 punktiem\n\n"
-            f"Atgriez PILNU JSON ar visiem laukiem. contentHtml jāsatur VISMAZ {target_words} vārdi."
-        )
-        expand_payload = {
-            "messages": [
-                {"role": "system", "content": MEGA_SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-                {"role": "assistant", "content": json.dumps(data, ensure_ascii=False)[:60000]},
-                {"role": "user", "content": expand_msg},
-            ],
-            "max_tokens": max_tokens,
-            "temperature": 0.5,
-            "response_format": {"type": "json_object"},
-        }
-        try:
-            data2 = chat_json(expand_payload)
-            expanded_words = count_words_from_html(data2.get("contentHtml", ""))
-            logging.info(f"[mega] Expansion result: {expanded_words} words")
-            if expanded_words > first_words:
-                data2["contentHtml"] = sanitize_html(normalize_lv_headings(data2.get("contentHtml", "")))
-                data2["seoSlug"] = slugify(data2.get("seoSlug") or data2.get("title", ""))
-                if not data2.get("category"):
-                    data2["category"] = meta.get("wpCategory") or "SharePoint"
-                if not data2.get("focusKeyword"):
-                    data2["focusKeyword"] = focus_keyword
-                data = data2
-        except Exception as e:
-            logging.warning(f"[mega] Expansion failed: {e}")
-
-    # One quality check + retry with feedback if needed
+    # Quality check
     issues = quality_issues(data, target_words)
     if issues:
-        logging.info(f"[mega] Quality issues found, retrying: {issues}")
-        retry_msg = (
-            f"Kļūdas iepriekšējā versijā:\n"
-            + "\n".join(f"- {i}" for i in issues)
-            + "\n\nIZLABO tieši šīs kļūdas, paturot pārējo saturu. Atgriez pilnu labotu JSON."
-        )
-        retry_payload = {
-            "messages": [
-                {"role": "system", "content": MEGA_SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-                {"role": "assistant", "content": json.dumps(data, ensure_ascii=False)[:60000]},
-                {"role": "user", "content": retry_msg},
-            ],
-            "max_tokens": max_tokens,
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-        }
-        try:
-            data2 = chat_json(retry_payload)
-            data2["contentHtml"] = sanitize_html(normalize_lv_headings(data2.get("contentHtml", "")))
-            data2["seoSlug"] = slugify(data2.get("seoSlug") or data2.get("title", ""))
-            if not data2.get("category"):
-                data2["category"] = meta.get("wpCategory") or "SharePoint"
-            if not data2.get("focusKeyword"):
-                data2["focusKeyword"] = focus_keyword
-            data = data2
-            logging.info("[mega] Retry completed")
-        except Exception as e:
-            logging.warning(f"[mega] Retry failed, using first version: {e}")
+        logging.info(f"[mega] Quality issues: {issues}")
 
-    final_words = count_words_from_html(data.get("contentHtml", ""))
-    logging.info(f"[mega] Done: {final_words} words (target {target_words})")
-
+    logging.info(f"[mega] Done: {total_words} words, {len(all_sections)} sections (target {target_words})")
     return data
 
 
