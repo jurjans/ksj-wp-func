@@ -764,7 +764,7 @@ def ksj_build_image_meta(ctx: dict, prompt_used: str, ext: str = ".png") -> dict
 
     alt = title
     if focus_kw.lower() not in alt.lower():
-        alt = f"{alt} — {focus_kw}"
+        alt = f"{alt} - {focus_kw}"
     alt = _ksj_trunc(alt, 120)
 
     caption = title
