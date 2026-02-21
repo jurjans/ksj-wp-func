@@ -1000,14 +1000,14 @@ MEGA_SYSTEM_PROMPT = (
     "AUDITORIJA: IT vadītāji un biznesa procesu īpašnieki Latvijā un Baltijā "
     "(uzņēmumi ar 50-500 darbiniekiem).\n\n"
     "⚠️ KRITISKA PRASĪBA — GARUMS:\n"
-    "Rakstam OBLIGĀTI jābūt norādītajā vārdu diapazonā. Īsāks raksts ir NORAIDĪTS.\n"
-    "Katra <h3> sadaļa satur 250-400 vārdus. Rakstā ir 8-10 sadaļas.\n"
-    "Nesamazini garumu. Neapkopo. Raksti PILNĀ detalizācijā katru sadaļu.\n\n"
+    "Tu OBLIGĀTI ievēro lietotāja norādīto sadaļu skaitu un vārdu skaitu katrā sadaļā.\n"
+    "Katra sadaļa satur VISMAZ norādīto vārdu skaitu — ar pilnām rindkopām, sarakstiem un piemēriem.\n"
+    "Īsāks raksts ir NORAIDĪTS. Nesamazini. Neapkopo. Raksti PILNĀ detalizācijā.\n\n"
     "RAKSTA STRUKTŪRA (obligāti):\n"
-    "• 1 ievads ar <h2>: problēmas definīcija un kāpēc tā ir aktuāla (150-250 vārdi)\n"
-    "• 8-10 sadaļas ar <h3>: katra satur problēmu → risinājumu → soļus → ROI (250-400 vārdi katra)\n"
-    "• 2+ saraksti (<ul>/<ol>) visā rakstā ar 4-7 punktiem katrā\n"
-    "• 1 <blockquote> ar galveno ROI kopsavilkumu\n"
+    "• 1 ievads ar <h2>: problēmas definīcija un kāpēc tā ir aktuāla\n"
+    "• N sadaļas ar <h3> (skaitu norāda lietotājs): katra satur problēmu → risinājumu → soļus → ROI\n"
+    "• Katra sadaļa OBLIGĀTI iekļauj: 2-3 rindkopas ar tekstu + 1 sarakstu (<ul>/<ol> ar 4-6 punktiem)\n"
+    "• 1 <blockquote> ar galveno ROI kopsavilkumu (jebkurā vietā rakstā)\n"
     "• Katra sadaļa beidzas ar pārejas teikumu uz nākamo\n\n"
     "KVALITĀTES STANDARTI:\n"
     "• Katrs apgalvojums pamatos ar scenāriju VAI skaitli\n"
@@ -1032,16 +1032,20 @@ MEGA_USER_TEMPLATE = (
     "Auditorija: {audience}\n"
     "Focus keyword: {focusKeyword}\n"
     "Kategorija: {wpCategory}\n\n"
-    "⚠️ OBLIGĀTAIS GARUMS: VISMAZ {targetWords} vārdi. Rakstā jābūt 8-10 sadaļām, "
-    "katra 250-400 vārdi. Raksts NEDRĪKST būt īsāks par {minWords} vārdiem.\n\n"
+    "⚠️ OBLIGĀTĀ STRUKTŪRA UN GARUMS:\n"
+    "• Ievads (<h2>): {introWords} vārdi — problēmas definīcija\n"
+    "• {sectionCount} sadaļas (<h3>): katra VISMAZ {wordsPerSection} vārdi\n"
+    "• Kopā: VISMAZ {targetWords} vārdi (minimums {minWords})\n"
+    "• Katra sadaļa OBLIGĀTI satur: 2-3 rindkopas + 1 sarakstu (ul/ol ar 4-6 punktiem) + ROI datus\n"
+    "• NEDRĪKST saīsināt, apkopot vai izlaist sadaļas\n\n"
     "JSON shēma:\n"
     '{{\n'
     '  "title": "max 60 rakstz., sākas ar focus keyword, satur skaitli",\n'
     '  "seoSlug": "ascii-lowercase-bez-diakritikam",\n'
     '  "excerpt": "max 160 rakstz., sākas ar focus keyword",\n'
-    '  "contentHtml": "<h2>Ievads</h2><p>... 150-250 vārdi ...</p>'
-    '<h3>1. sadaļa</h3><p>... 250-400 vārdi ...</p>'
-    '<h3>2. sadaļa</h3><p>... 250-400 vārdi ...</p>... utt. līdz 8-10 sadaļām",\n'
+    '  "contentHtml": "<h2>Ievads ({introWords}+ vārdi)</h2><p>...</p>'
+    '<h3>1. sadaļa ({wordsPerSection}+ vārdi)</h3><p>...</p><ul><li>...</li></ul><p>...</p>'
+    '... atkārto {sectionCount} reizes ...",\n'
     '  "category": "{wpCategory}",\n'
     '  "tags": ["3-6 latviski termini"],\n'
     '  "tagSlugs": ["ascii-slug"],\n'
@@ -1061,10 +1065,10 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
         logging.info(f"[mega] Capping target from {target_words} to {MEGA_MAX_WORDS} (mega mode limit)")
         target_words = MEGA_MAX_WORDS
 
-    # GPT-4o consistently underdelivers on word count in JSON mode (~50-60% of target).
-    # Overshoot the prompt target so actual output lands closer to real target.
-    real_target = target_words
-    prompt_target = int(target_words * 1.6)
+    # Calculate section parameters to achieve target word count
+    section_count = max(6, min(12, target_words // 250))
+    words_per_section = target_words // section_count
+    intro_words = max(150, target_words // 10)
 
     focus_keyword = meta.get("focusKeyword", "") or ""
     title_hint = meta.get("titleHint", "") or ""
@@ -1076,11 +1080,14 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
         audience=meta.get("audience", ""),
         focusKeyword=focus_keyword,
         wpCategory=meta.get("wpCategory", "SharePoint"),
-        targetWords=prompt_target,
-        minWords=int(prompt_target * 0.85),
+        targetWords=target_words,
+        minWords=int(target_words * 0.85),
+        sectionCount=section_count,
+        wordsPerSection=words_per_section,
+        introWords=intro_words,
     )
 
-    max_tokens = get_dynamic_max_tokens(prompt_target)
+    max_tokens = get_dynamic_max_tokens(target_words)
 
     # Mega mode uses simpler json_object format to avoid Azure strict schema
     # restrictions with large minLength values on contentHtml
@@ -1094,7 +1101,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
         "response_format": {"type": "json_object"},
     }
 
-    logging.info(f"[mega] Starting single-call generation, real_target={real_target}, prompt_target={prompt_target}, max_tokens={max_tokens}")
+    logging.info(f"[mega] Starting single-call generation, target={target_words}, sections={section_count}x{words_per_section}w, max_tokens={max_tokens}")
     data = chat_json(payload)
 
     # Minimal post-processing (sanitize, don't rewrite)
@@ -1108,20 +1115,20 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
 
     # Length check — if severely short vs REAL target, do a dedicated expansion retry
     first_words = count_words_from_html(data.get("contentHtml", ""))
-    logging.info(f"[mega] First attempt: {first_words} words (real target {real_target})")
+    logging.info(f"[mega] First attempt: {first_words} words (real target {target_words})")
 
-    if first_words < int(real_target * 0.70):
-        logging.warning(f"[mega] Article too short ({first_words}/{real_target}), expanding...")
+    if first_words < int(target_words * 0.70):
+        logging.warning(f"[mega] Article too short ({first_words}/{target_words}), expanding...")
         expand_msg = (
-            f"Raksts ir PĀRĀK ĪSS: tikai {first_words} vārdi no nepieciešamajiem {prompt_target}.\n"
-            f"Trūkst {prompt_target - first_words} vārdu.\n\n"
+            f"Raksts ir PĀRĀK ĪSS: tikai {first_words} vārdi no nepieciešamajiem {target_words}.\n"
+            f"Trūkst {target_words - first_words} vārdu.\n\n"
             f"UZDEVUMS: Pārraksti rakstu PILNĀ garumā. Katrai no 8-10 sadaļām jābūt 250-400 vārdiem.\n"
             f"Pievieno katrā sadaļā:\n"
             f"• Papildu praktiskos piemērus ar Microsoft 365 UI soļiem\n"
             f"• Detalizētākus scenārijus un konfigurācijas aprakstus\n"
             f"• ROI datus ar konkrētiem skaitļiem\n"
             f"• Sarakstus ar 5-7 punktiem\n\n"
-            f"Atgriez PILNU JSON ar visiem laukiem. contentHtml jāsatur VISMAZ {prompt_target} vārdi."
+            f"Atgriez PILNU JSON ar visiem laukiem. contentHtml jāsatur VISMAZ {target_words} vārdi."
         )
         expand_payload = {
             "messages": [
@@ -1150,7 +1157,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
             logging.warning(f"[mega] Expansion failed: {e}")
 
     # One quality check + retry with feedback if needed
-    issues = quality_issues(data, real_target)
+    issues = quality_issues(data, target_words)
     if issues:
         logging.info(f"[mega] Quality issues found, retrying: {issues}")
         retry_msg = (
@@ -1183,7 +1190,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
             logging.warning(f"[mega] Retry failed, using first version: {e}")
 
     final_words = count_words_from_html(data.get("contentHtml", ""))
-    logging.info(f"[mega] Done: {final_words} words (real target {real_target}, prompt target {prompt_target})")
+    logging.info(f"[mega] Done: {final_words} words (target {target_words})")
 
     return data
 
