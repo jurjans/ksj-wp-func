@@ -1061,6 +1061,11 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
         logging.info(f"[mega] Capping target from {target_words} to {MEGA_MAX_WORDS} (mega mode limit)")
         target_words = MEGA_MAX_WORDS
 
+    # GPT-4o consistently underdelivers on word count in JSON mode (~50-60% of target).
+    # Overshoot the prompt target so actual output lands closer to real target.
+    real_target = target_words
+    prompt_target = int(target_words * 1.6)
+
     focus_keyword = meta.get("focusKeyword", "") or ""
     title_hint = meta.get("titleHint", "") or ""
 
@@ -1071,11 +1076,11 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
         audience=meta.get("audience", ""),
         focusKeyword=focus_keyword,
         wpCategory=meta.get("wpCategory", "SharePoint"),
-        targetWords=target_words,
-        minWords=int(target_words * 0.85),
+        targetWords=prompt_target,
+        minWords=int(prompt_target * 0.85),
     )
 
-    max_tokens = get_dynamic_max_tokens(target_words)
+    max_tokens = get_dynamic_max_tokens(prompt_target)
 
     # Mega mode uses simpler json_object format to avoid Azure strict schema
     # restrictions with large minLength values on contentHtml
@@ -1089,7 +1094,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
         "response_format": {"type": "json_object"},
     }
 
-    logging.info(f"[mega] Starting single-call generation, target={target_words} words, max_tokens={max_tokens}")
+    logging.info(f"[mega] Starting single-call generation, real_target={real_target}, prompt_target={prompt_target}, max_tokens={max_tokens}")
     data = chat_json(payload)
 
     # Minimal post-processing (sanitize, don't rewrite)
@@ -1101,22 +1106,22 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
     if not data.get("focusKeyword"):
         data["focusKeyword"] = focus_keyword
 
-    # Length check — if severely short, do a dedicated expansion retry
+    # Length check — if severely short vs REAL target, do a dedicated expansion retry
     first_words = count_words_from_html(data.get("contentHtml", ""))
-    logging.info(f"[mega] First attempt: {first_words} words (target {target_words})")
+    logging.info(f"[mega] First attempt: {first_words} words (real target {real_target})")
 
-    if first_words < int(target_words * 0.70):
-        logging.warning(f"[mega] Article too short ({first_words}/{target_words}), expanding...")
+    if first_words < int(real_target * 0.70):
+        logging.warning(f"[mega] Article too short ({first_words}/{real_target}), expanding...")
         expand_msg = (
-            f"Raksts ir PĀRĀK ĪSS: tikai {first_words} vārdi no nepieciešamajiem {target_words}.\n"
-            f"Trūkst {target_words - first_words} vārdu.\n\n"
+            f"Raksts ir PĀRĀK ĪSS: tikai {first_words} vārdi no nepieciešamajiem {prompt_target}.\n"
+            f"Trūkst {prompt_target - first_words} vārdu.\n\n"
             f"UZDEVUMS: Pārraksti rakstu PILNĀ garumā. Katrai no 8-10 sadaļām jābūt 250-400 vārdiem.\n"
             f"Pievieno katrā sadaļā:\n"
             f"• Papildu praktiskos piemērus ar Microsoft 365 UI soļiem\n"
             f"• Detalizētākus scenārijus un konfigurācijas aprakstus\n"
             f"• ROI datus ar konkrētiem skaitļiem\n"
             f"• Sarakstus ar 5-7 punktiem\n\n"
-            f"Atgriez PILNU JSON ar visiem laukiem. contentHtml jāsatur VISMAZ {target_words} vārdi."
+            f"Atgriez PILNU JSON ar visiem laukiem. contentHtml jāsatur VISMAZ {prompt_target} vārdi."
         )
         expand_payload = {
             "messages": [
@@ -1145,7 +1150,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
             logging.warning(f"[mega] Expansion failed: {e}")
 
     # One quality check + retry with feedback if needed
-    issues = quality_issues(data, target_words)
+    issues = quality_issues(data, real_target)
     if issues:
         logging.info(f"[mega] Quality issues found, retrying: {issues}")
         retry_msg = (
@@ -1178,7 +1183,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
             logging.warning(f"[mega] Retry failed, using first version: {e}")
 
     final_words = count_words_from_html(data.get("contentHtml", ""))
-    logging.info(f"[mega] Done: {final_words} words (target {target_words})")
+    logging.info(f"[mega] Done: {final_words} words (real target {real_target}, prompt target {prompt_target})")
 
     return data
 
