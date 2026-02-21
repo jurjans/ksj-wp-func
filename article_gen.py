@@ -999,9 +999,13 @@ MEGA_SYSTEM_PROMPT = (
     "rakstu latviešu valodā.\n\n"
     "AUDITORIJA: IT vadītāji un biznesa procesu īpašnieki Latvijā un Baltijā "
     "(uzņēmumi ar 50-500 darbiniekiem).\n\n"
+    "⚠️ KRITISKA PRASĪBA — GARUMS:\n"
+    "Rakstam OBLIGĀTI jābūt norādītajā vārdu diapazonā. Īsāks raksts ir NORAIDĪTS.\n"
+    "Katra <h3> sadaļa satur 250-400 vārdus. Rakstā ir 8-10 sadaļas.\n"
+    "Nesamazini garumu. Neapkopo. Raksti PILNĀ detalizācijā katru sadaļu.\n\n"
     "RAKSTA STRUKTŪRA (obligāti):\n"
-    "• 1 ievads ar <h2>: problēmas definīcija un kāpēc tā ir aktuāla (150-200 vārdi)\n"
-    "• 8-10 sadaļas ar <h3>: katra satur problēmu → risinājumu → soļus → ROI (250-350 vārdi katra)\n"
+    "• 1 ievads ar <h2>: problēmas definīcija un kāpēc tā ir aktuāla (150-250 vārdi)\n"
+    "• 8-10 sadaļas ar <h3>: katra satur problēmu → risinājumu → soļus → ROI (250-400 vārdi katra)\n"
     "• 2+ saraksti (<ul>/<ol>) visā rakstā ar 4-7 punktiem katrā\n"
     "• 1 <blockquote> ar galveno ROI kopsavilkumu\n"
     "• Katra sadaļa beidzas ar pārejas teikumu uz nākamo\n\n"
@@ -1027,14 +1031,17 @@ MEGA_USER_TEMPLATE = (
     "Leņķis: {angle}\n"
     "Auditorija: {audience}\n"
     "Focus keyword: {focusKeyword}\n"
-    "Kategorija: {wpCategory}\n"
-    "Mērķa garums: {targetWords} vārdi\n\n"
+    "Kategorija: {wpCategory}\n\n"
+    "⚠️ OBLIGĀTAIS GARUMS: VISMAZ {targetWords} vārdi. Rakstā jābūt 8-10 sadaļām, "
+    "katra 250-400 vārdi. Raksts NEDRĪKST būt īsāks par {minWords} vārdiem.\n\n"
     "JSON shēma:\n"
     '{{\n'
     '  "title": "max 60 rakstz., sākas ar focus keyword, satur skaitli",\n'
     '  "seoSlug": "ascii-lowercase-bez-diakritikam",\n'
     '  "excerpt": "max 160 rakstz., sākas ar focus keyword",\n'
-    '  "contentHtml": "<h2>Ievads</h2><p>...</p><h3>...</h3><p>...</p>...",\n'
+    '  "contentHtml": "<h2>Ievads</h2><p>... 150-250 vārdi ...</p>'
+    '<h3>1. sadaļa</h3><p>... 250-400 vārdi ...</p>'
+    '<h3>2. sadaļa</h3><p>... 250-400 vārdi ...</p>... utt. līdz 8-10 sadaļām",\n'
     '  "category": "{wpCategory}",\n'
     '  "tags": ["3-6 latviski termini"],\n'
     '  "tagSlugs": ["ascii-slug"],\n'
@@ -1048,6 +1055,12 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
     Generate a complete article in ONE API call using the mega-prompt approach.
     Returns the same dict structure as build_wp_article_from_item.
     """
+    # Cap target for mega mode — GPT-4o can reliably produce ~3000-4000 words in one call
+    MEGA_MAX_WORDS = int(os.getenv("MEGA_MAX_WORDS", "4000"))
+    if target_words > MEGA_MAX_WORDS:
+        logging.info(f"[mega] Capping target from {target_words} to {MEGA_MAX_WORDS} (mega mode limit)")
+        target_words = MEGA_MAX_WORDS
+
     focus_keyword = meta.get("focusKeyword", "") or ""
     title_hint = meta.get("titleHint", "") or ""
 
@@ -1059,6 +1072,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
         focusKeyword=focus_keyword,
         wpCategory=meta.get("wpCategory", "SharePoint"),
         targetWords=target_words,
+        minWords=int(target_words * 0.85),
     )
 
     max_tokens = get_dynamic_max_tokens(target_words)
@@ -1086,6 +1100,49 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
         data["category"] = meta.get("wpCategory") or "SharePoint"
     if not data.get("focusKeyword"):
         data["focusKeyword"] = focus_keyword
+
+    # Length check — if severely short, do a dedicated expansion retry
+    first_words = count_words_from_html(data.get("contentHtml", ""))
+    logging.info(f"[mega] First attempt: {first_words} words (target {target_words})")
+
+    if first_words < int(target_words * 0.70):
+        logging.warning(f"[mega] Article too short ({first_words}/{target_words}), expanding...")
+        expand_msg = (
+            f"Raksts ir PĀRĀK ĪSS: tikai {first_words} vārdi no nepieciešamajiem {target_words}.\n"
+            f"Trūkst {target_words - first_words} vārdu.\n\n"
+            f"UZDEVUMS: Pārraksti rakstu PILNĀ garumā. Katrai no 8-10 sadaļām jābūt 250-400 vārdiem.\n"
+            f"Pievieno katrā sadaļā:\n"
+            f"• Papildu praktiskos piemērus ar Microsoft 365 UI soļiem\n"
+            f"• Detalizētākus scenārijus un konfigurācijas aprakstus\n"
+            f"• ROI datus ar konkrētiem skaitļiem\n"
+            f"• Sarakstus ar 5-7 punktiem\n\n"
+            f"Atgriez PILNU JSON ar visiem laukiem. contentHtml jāsatur VISMAZ {target_words} vārdi."
+        )
+        expand_payload = {
+            "messages": [
+                {"role": "system", "content": MEGA_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+                {"role": "assistant", "content": json.dumps(data, ensure_ascii=False)[:60000]},
+                {"role": "user", "content": expand_msg},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.5,
+            "response_format": {"type": "json_object"},
+        }
+        try:
+            data2 = chat_json(expand_payload)
+            expanded_words = count_words_from_html(data2.get("contentHtml", ""))
+            logging.info(f"[mega] Expansion result: {expanded_words} words")
+            if expanded_words > first_words:
+                data2["contentHtml"] = sanitize_html(normalize_lv_headings(data2.get("contentHtml", "")))
+                data2["seoSlug"] = slugify(data2.get("seoSlug") or data2.get("title", ""))
+                if not data2.get("category"):
+                    data2["category"] = meta.get("wpCategory") or "SharePoint"
+                if not data2.get("focusKeyword"):
+                    data2["focusKeyword"] = focus_keyword
+                data = data2
+        except Exception as e:
+            logging.warning(f"[mega] Expansion failed: {e}")
 
     # One quality check + retry with feedback if needed
     issues = quality_issues(data, target_words)
