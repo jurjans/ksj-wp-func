@@ -770,7 +770,7 @@ def normalize_tags(data: dict, meta: dict) -> dict:
                 items = json.load(f)
             return {i["slug"]: i["name"] for i in items if i.get("slug") and i.get("name")}
         except Exception as e:
-            logging.warning(f"[tags.json] load failed: {e}")
+            logging.debug(f"[tags.json] not found (optional): {e}")
             return {}
 
     def _load_anchor_map() -> dict[str, list[str]]:
@@ -780,7 +780,7 @@ def normalize_tags(data: dict, meta: dict) -> dict:
                 obj = json.load(f)
             return {k.strip().lower(): (v if isinstance(v, list) else [v]) for k, v in obj.items()}
         except Exception as e:
-            logging.warning(f"[anchor_map.json] load failed: {e}")
+            logging.debug(f"[anchor_map.json] not found (optional): {e}")
             return {}
 
     limit = int(os.getenv("PER_POST_TAG_LIMIT", "3"))
@@ -1017,9 +1017,9 @@ def research_topic(meta: dict) -> dict:
     }
 
     # ── Query 1: English search (Microsoft docs + best practices) ─────────
-    en_query = f"{primary} {angle} site:microsoft.com OR site:learn.microsoft.com".strip()
-    if len(en_query) > 120:
-        en_query = f"{primary} {angle} Microsoft 365"
+    en_query = f"{primary} {angle} Microsoft 365 best practices".strip()
+    if len(en_query) > 100:
+        en_query = f"{primary} best practices"
 
     try:
         en_serp = serp_search_cached(en_query, ttl=DEFAULT_TTL * 2)
@@ -1256,42 +1256,41 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
 
     # ── Auto-generate focusKeyword if missing ─────────────────────────────
     if not focus_keyword:
-        logging.info("[mega] focusKeyword is empty, auto-generating from metadata")
-        try:
-            kw_result = generate_keywords_from_input(
-                {
-                    "primary": meta.get("primary", ""),
-                    "angle": meta.get("angle", ""),
-                    "audience": meta.get("audience", ""),
-                    "wpCategory": meta.get("wpCategory", ""),
-                    "tagsCsv": meta.get("tagsCsv", ""),
-                    "SeoSlug": meta.get("seoSlugHint", ""),
-                    "combokey": meta.get("primary", ""),
-                },
-                limit=5,
-                use_llm=True,
-                enrich=True,
-            )
-            if isinstance(kw_result, dict):
-                focus_keyword = (
-                    kw_result.get("top_recommendation")
-                    or (kw_result.get("candidates", [{}])[0].get("phrase") if kw_result.get("candidates") else "")
-                    or ""
+        # Best source: the primary topic field IS the focus keyword in most cases
+        primary = (meta.get("primary") or "").strip()
+        if primary:
+            focus_keyword = primary
+            meta["focusKeyword"] = focus_keyword
+            logging.info(f"[mega] focusKeyword from primary: '{focus_keyword}'")
+        else:
+            # Fallback: try KeywordExtractor
+            logging.info("[mega] focusKeyword is empty, auto-generating via KeywordExtractor")
+            try:
+                kw_result = generate_keywords_from_input(
+                    {
+                        "primary": meta.get("primary", ""),
+                        "angle": meta.get("angle", ""),
+                        "audience": meta.get("audience", ""),
+                        "wpCategory": meta.get("wpCategory", ""),
+                        "tagsCsv": meta.get("tagsCsv", ""),
+                        "SeoSlug": meta.get("seoSlugHint", ""),
+                        "combokey": meta.get("primary", ""),
+                    },
+                    limit=5,
+                    use_llm=True,
+                    enrich=True,
                 )
-            if focus_keyword:
-                meta["focusKeyword"] = focus_keyword
-                logging.info(f"[mega] Auto-generated focusKeyword: '{focus_keyword}'")
-            else:
-                # Fallback: use primary topic as keyword
-                focus_keyword = meta.get("primary", "").strip()
+                if isinstance(kw_result, dict):
+                    focus_keyword = (
+                        kw_result.get("top_recommendation")
+                        or (kw_result.get("candidates", [{}])[0].get("phrase") if kw_result.get("candidates") else "")
+                        or ""
+                    )
                 if focus_keyword:
                     meta["focusKeyword"] = focus_keyword
-                    logging.info(f"[mega] Fallback focusKeyword from primary: '{focus_keyword}'")
-        except Exception as e:
-            logging.warning(f"[mega] Auto keyword generation failed: {e}")
-            focus_keyword = meta.get("primary", "").strip()
-            if focus_keyword:
-                meta["focusKeyword"] = focus_keyword
+                    logging.info(f"[mega] Auto-generated focusKeyword: '{focus_keyword}'")
+            except Exception as e:
+                logging.warning(f"[mega] Auto keyword generation failed: {e}")
 
     # ── Phase 0: Research ─────────────────────────────────────────────────
     research = {}
