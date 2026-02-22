@@ -1243,60 +1243,79 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
     # Ensure focus keyword appears in content even if GPT didn't follow instructions
     if focus_keyword:
         kw_lower = focus_keyword.lower()
-        content_lower = content_html.lower()
 
-        # Check if keyword is in content at all
-        kw_count = content_lower.count(kw_lower)
-        logging.info(f"[mega] Keyword '{focus_keyword}' appears {kw_count} times in content")
+        # Strip HTML to check plain text content
+        plain_text = re.sub(r'<[^>]+>', ' ', content_html)
+        plain_lower = plain_text.lower()
+        kw_count = plain_lower.count(kw_lower)
+        logging.info(f"[mega] Keyword '{focus_keyword}' appears {kw_count} times in plain text")
 
-        # Ensure intro starts with keyword
-        if kw_lower not in content_lower[:500]:
-            # Prepend keyword sentence to first <p> after <h2>
-            kw_intro = f"<p><strong>{focus_keyword}</strong> ir aktuāla tēma, kas ietekmē ikvienu organizāciju. "
-            content_html = re.sub(
-                r'(<h2>[^<]*</h2>\s*)<p>',
-                rf'\1{kw_intro}',
-                content_html,
-                count=1,
+        # 1. Ensure keyword at beginning of content — prepend a new paragraph after <h2>
+        if kw_lower not in plain_lower[:500]:
+            kw_sentence = (
+                f"<p><strong>{focus_keyword}</strong> ir viena no svarīgākajām tēmām, "
+                f"ko organizācijas risina, lai uzlabotu savu digitālo infrastruktūru.</p>"
             )
-            logging.info("[mega] Injected keyword at content beginning")
+            # Insert after closing </h2> tag or after first <h2>...</h2> block
+            h2_pattern = re.compile(r'(</h2>)', re.IGNORECASE)
+            if h2_pattern.search(content_html):
+                content_html = h2_pattern.sub(r'\1\n' + kw_sentence, content_html, count=1)
+                logging.info("[mega] Injected keyword paragraph after <h2>")
+            else:
+                content_html = kw_sentence + "\n" + content_html
+                logging.info("[mega] Prepended keyword paragraph at start")
 
-        # Ensure keyword appears in at least 2 H3 subheadings
-        h3_matches = re.findall(r'<h3>([^<]+)</h3>', content_html, re.IGNORECASE)
+        # 2. Ensure keyword in at least 2 H3 subheadings
+        h3_pattern = re.compile(r'<h3>([^<]+)</h3>')
+        h3_matches = h3_pattern.findall(content_html)
         h3_with_kw = sum(1 for h in h3_matches if kw_lower in h.lower())
         if h3_with_kw < 2 and h3_matches:
-            # Add keyword to first H3 that doesn't have it
             replaced = 0
             for h3_text in h3_matches:
                 if kw_lower not in h3_text.lower() and replaced < (2 - h3_with_kw):
-                    new_h3 = f"{focus_keyword}: {h3_text}"
+                    new_h3 = f"{h3_text} — {focus_keyword}"
                     content_html = content_html.replace(
                         f"<h3>{h3_text}</h3>",
                         f"<h3>{new_h3}</h3>",
                         1,
                     )
                     replaced += 1
-            logging.info(f"[mega] Added keyword to {replaced} H3 subheadings")
+            if replaced:
+                logging.info(f"[mega] Added keyword to {replaced} H3 subheadings")
 
-        # Ensure minimum keyword density (~1%) — inject into sections if needed
-        total_words_est = len(re.sub(r'<[^>]+>', ' ', content_html).split())
-        target_occurrences = max(3, total_words_est // 150)  # ~1 per 150 words
-        current_count = content_html.lower().count(kw_lower)
+        # 3. Ensure minimum keyword density (~1%) — inject into paragraphs
+        plain_text2 = re.sub(r'<[^>]+>', ' ', content_html)
+        total_words_est = len(plain_text2.split())
+        target_occurrences = max(4, total_words_est // 200)  # ~1 per 200 words
+        current_count = plain_text2.lower().count(kw_lower)
+
         if current_count < target_occurrences:
-            # Find <p> tags and inject keyword naturally
-            paragraphs = list(re.finditer(r'<p>([^<]{100,})</p>', content_html))
-            inject_count = min(target_occurrences - current_count, len(paragraphs) // 3)
-            step = max(1, len(paragraphs) // (inject_count + 1))
-            for i in range(0, min(inject_count, len(paragraphs)), 1):
-                idx = min(i * step, len(paragraphs) - 1)
-                p_match = paragraphs[idx]
-                old_p = p_match.group(0)
-                if kw_lower not in old_p.lower():
-                    # Append keyword mention at end of paragraph
-                    new_p = old_p.replace('</p>', f' Tieši {focus_keyword} nodrošina šo rezultātu.</p>')
-                    content_html = content_html.replace(old_p, new_p, 1)
-            final_count = content_html.lower().count(kw_lower)
-            logging.info(f"[mega] Keyword density boosted: {current_count} → {final_count} occurrences")
+            # Find ALL <p>...</p> blocks (including those with inner HTML)
+            p_pattern = re.compile(r'(<p>)(.*?)(</p>)', re.DOTALL)
+            p_matches = list(p_pattern.finditer(content_html))
+            # Filter to substantial paragraphs (>50 chars of text)
+            substantial = [m for m in p_matches if len(re.sub(r'<[^>]+>', '', m.group(2))) > 50]
+
+            need = target_occurrences - current_count
+            if substantial:
+                step = max(1, len(substantial) // (need + 1))
+                injected = 0
+                for i in range(0, len(substantial), step):
+                    if injected >= need:
+                        break
+                    m = substantial[i]
+                    p_text = m.group(2).lower()
+                    if kw_lower not in p_text:
+                        old_p = m.group(0)
+                        # Insert keyword phrase before closing </p>
+                        new_p = f"{m.group(1)}{m.group(2)} {focus_keyword} nodrošina tieši šādu pieeju.{m.group(3)}"
+                        content_html = content_html.replace(old_p, new_p, 1)
+                        injected += 1
+
+                final_count = re.sub(r'<[^>]+>', ' ', content_html).lower().count(kw_lower)
+                logging.info(f"[mega] Keyword density: {current_count} → {final_count} ({final_count}/{total_words_est} words)")
+
+    content_html = sanitize_html(content_html)
 
     total_words = count_words_from_html(content_html)
     logging.info(f"[mega] Assembly: {total_words} words from {len(all_sections)} sections (target {target_words})")
