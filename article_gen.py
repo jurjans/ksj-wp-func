@@ -990,11 +990,155 @@ def generate_section_html_with_validation(meta: dict, h3_title: str, target_word
 ARTICLE_MODE = (os.getenv("ARTICLE_MODE", "multi") or "multi").strip().lower()
 
 # =============================================================================
-# MEGA-PROMPT: hybrid article generation (Plan C v2)
-# Phase 1: outline + meta + intro (1 call)
-# Phase 2: sections in batches of 3-4 (2-3 calls)
-# Phase 3: assembly + quality check
-# Total: 3-5 API calls with full cross-section context
+# Plan B: Research phase — SERP data enrichment before article generation
+# =============================================================================
+
+def research_topic(meta: dict) -> dict:
+    """
+    Research the topic before writing using SerpApi.
+    Returns structured research context to inject into prompts.
+    Uses 2 SerpApi calls: one English (Microsoft docs), one Latvian (competitors).
+    Returns empty dict if SerpApi unavailable or quota exceeded.
+    """
+    primary = (meta.get("primary") or "").strip()
+    angle = (meta.get("angle") or "").strip()
+    focus_keyword = (meta.get("focusKeyword") or "").strip()
+
+    if not primary and not focus_keyword:
+        return {}
+
+    research = {
+        "en_titles": [],        # English competitor article titles
+        "en_links": [],         # Microsoft docs links
+        "paa": [],              # People Also Ask questions
+        "lv_titles": [],        # Latvian competitor titles
+        "lv_snippets": [],      # Latvian competitor snippets
+        "related_searches": [], # Related Google searches
+    }
+
+    # ── Query 1: English search (Microsoft docs + best practices) ─────────
+    en_query = f"{primary} {angle} site:microsoft.com OR site:learn.microsoft.com".strip()
+    if len(en_query) > 120:
+        en_query = f"{primary} {angle} Microsoft 365"
+
+    try:
+        en_serp = serp_search_cached(en_query, ttl=DEFAULT_TTL * 2)
+        if en_serp:
+            for r in en_serp.get("organic_results", [])[:5]:
+                title = (r.get("title") or "").strip()
+                link = (r.get("link") or "").strip()
+                if title:
+                    research["en_titles"].append(title)
+                if link and "microsoft.com" in link:
+                    research["en_links"].append(link)
+
+            for q in en_serp.get("related_questions", [])[:6]:
+                question = (q.get("question") or "").strip()
+                if question:
+                    research["paa"].append(question)
+
+            for rs in en_serp.get("related_searches", [])[:4]:
+                query_text = (rs.get("query") or "").strip()
+                if query_text:
+                    research["related_searches"].append(query_text)
+
+            logging.info(
+                f"[research] EN: {len(research['en_titles'])} titles, "
+                f"{len(research['paa'])} PAA, {len(research['en_links'])} MS links"
+            )
+    except Exception as e:
+        logging.warning(f"[research] EN search failed: {e}")
+
+    # ── Query 2: Latvian search (local competitors) ───────────────────────
+    lv_query = f"{primary} {focus_keyword}".strip()
+    if not lv_query or lv_query == primary:
+        lv_query = f"{focus_keyword} praktiskie soļi" if focus_keyword else f"{primary} ieviešana"
+
+    try:
+        lv_serp = serp_search_cached(lv_query, ttl=DEFAULT_TTL * 2)
+        if lv_serp:
+            for r in lv_serp.get("organic_results", [])[:5]:
+                title = (r.get("title") or "").strip()
+                snippet = (r.get("snippet") or "").strip()
+                if title:
+                    research["lv_titles"].append(title)
+                if snippet:
+                    research["lv_snippets"].append(f"{title}: {snippet}" if title else snippet)
+
+            # Also grab PAA from Latvian results if any
+            for q in lv_serp.get("related_questions", [])[:4]:
+                question = (q.get("question") or "").strip()
+                if question and question not in research["paa"]:
+                    research["paa"].append(question)
+
+            logging.info(
+                f"[research] LV: {len(research['lv_titles'])} titles, "
+                f"{len(research['lv_snippets'])} snippets"
+            )
+    except Exception as e:
+        logging.warning(f"[research] LV search failed: {e}")
+
+    total_data = sum(len(v) for v in research.values())
+    logging.info(f"[research] Total research data points: {total_data}")
+    return research
+
+
+def format_research_for_outline(research: dict) -> str:
+    """Format research data as a prompt section for the outline call."""
+    if not research or not any(research.values()):
+        return ""
+
+    parts = []
+
+    if research.get("paa"):
+        parts.append("GOOGLE 'PEOPLE ALSO ASK' JAUTĀJUMI (jāatbild rakstā):")
+        for q in research["paa"][:6]:
+            parts.append(f"  • {q}")
+
+    if research.get("en_titles"):
+        parts.append("\nKONKURENTU RAKSTI ANGLISKI (jāpārspēj ar labāku saturu):")
+        for t in research["en_titles"][:5]:
+            parts.append(f"  • {t}")
+
+    if research.get("lv_titles"):
+        parts.append("\nLATVIESKI KONKURENTI (jāpiedāvā kas unikāls):")
+        for t in research["lv_titles"][:3]:
+            parts.append(f"  • {t}")
+
+    if research.get("related_searches"):
+        parts.append("\nSAISTĪTIE MEKLĒJUMI (var izmantot kā apakštēmas):")
+        for s in research["related_searches"][:4]:
+            parts.append(f"  • {s}")
+
+    return "\n".join(parts)
+
+
+def format_research_for_batch(research: dict, batch_h3: list[str]) -> str:
+    """Format relevant research data for a specific batch of sections."""
+    if not research or not any(research.values()):
+        return ""
+
+    parts = []
+
+    # Include PAA questions that might relate to this batch's topics
+    if research.get("paa"):
+        parts.append("Google jautājumi, uz kuriem šīm sadaļām jāatbild:")
+        for q in research["paa"][:4]:
+            parts.append(f"  • {q}")
+
+    if research.get("en_links"):
+        parts.append(f"\nMicrosoft dokumentācija atsaucēm: {', '.join(research['en_links'][:2])}")
+
+    return "\n".join(parts) if parts else ""
+
+
+# =============================================================================
+# MEGA-PROMPT: hybrid article generation (Plan C v2 + Plan B research)
+# Phase 0: research_topic() — 2 SerpApi calls
+# Phase 1: outline + meta + intro (1 GPT call)
+# Phase 2: sections in batches of 3-4 (2-3 GPT calls)
+# Phase 3: assembly + keyword safety net
+# Total: 2 SerpApi + 3-5 GPT calls
 # =============================================================================
 
 MEGA_SYSTEM_PROMPT = (
@@ -1035,7 +1179,10 @@ MEGA_OUTLINE_USER = (
     "• SEO SLUG: JĀSATUR '{focusKeywordSlug}'\n"
     "• INTRO HTML: Pirmās <p> pirmajam teikumam JĀSĀKAS ar '{focusKeyword}'\n"
     "• H3: Vismaz 2 virsrakstiem jāsatur '{focusKeyword}' vai tā daļa\n\n"
-    "UZDEVUMS: Izveido raksta plānu un ievadu.\n\n"
+    "{researchContext}"
+    "UZDEVUMS: Izveido raksta plānu un ievadu.\n"
+    "Raksta plānam JĀATBILD uz Google PAA jautājumiem (ja norādīti) un "
+    "JĀPIEDĀVĀ unikāls saturs, ko konkurenti neapraksta.\n\n"
     "JSON shēma:\n"
     '{{\n'
     '  "title": "SĀKAS ar \'{focusKeyword}\', max 60 rakstz., satur skaitli",\n'
@@ -1059,6 +1206,7 @@ MEGA_BATCH_USER = (
     "• Vismaz 1 no šīs grupas <h3> virsrakstiem JĀSATUR frāzi '{focusKeyword}'\n"
     "• Katrā sadaļas HTML tekstā frāze '{focusKeyword}' jāparādās VISMAZ 1 reizi (organiski teikumā)\n"
     "• Kopējais keyword blīvums visā rakstā: 1-1.5%\n\n"
+    "{researchContext}"
     "Jau uzrakstītās sadaļas (neatkārto!):\n{previousContent}\n\n"
     "UZDEVUMS: Uzraksti PILNĀ DETALIZĀCIJĀ šīs {batchCount} sadaļas:\n{batchSections}\n\n"
     "⚠️ KATRAS SADAĻAS OBLIGĀTĀ STRUKTŪRA (VISMAZ {wordsPerSection} vārdi):\n"
@@ -1106,8 +1254,22 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
     title_hint = meta.get("titleHint", "") or ""
     max_tokens = get_dynamic_max_tokens(target_words)
 
+    # ── Phase 0: Research ─────────────────────────────────────────────────
+    research = {}
+    try:
+        research = research_topic(meta)
+    except Exception as e:
+        logging.warning(f"[mega] Research phase failed (continuing without): {e}")
+
+    research_outline_text = format_research_for_outline(research)
+    if research_outline_text:
+        research_outline_text += "\n\n"
+    research_batch_text = format_research_for_batch(research, [])
+    if research_batch_text:
+        research_batch_text += "\n\n"
+
     # ── Phase 1: Outline + intro ──────────────────────────────────────────
-    logging.info(f"[mega] Phase 1: Generating outline, target={target_words}")
+    logging.info(f"[mega] Phase 1: Generating outline, target={target_words}, research={bool(research)}")
     outline_msg = MEGA_OUTLINE_USER.format(
         primary=meta.get("primary", ""),
         angle=meta.get("angle", ""),
@@ -1117,6 +1279,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
         focusKeywordSlug=slugify(focus_keyword) if focus_keyword else "",
         wpCategory=meta.get("wpCategory", "SharePoint"),
         targetWords=target_words,
+        researchContext=research_outline_text,
     )
 
     outline_data = chat_json({
@@ -1167,6 +1330,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
             angle=meta.get("angle", ""),
             focusKeyword=focus_keyword,
             title=title,
+            researchContext=research_batch_text,
             previousContent=prev_summary or "Šī ir pirmā sadaļu grupa.",
             batchCount=len(batch_h3),
             batchSections=batch_sections_text,
@@ -1211,6 +1375,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
                         angle=meta.get("angle", ""),
                         focusKeyword=focus_keyword,
                         title=title,
+                        researchContext=research_batch_text,
                         previousContent=prev_summary,
                         batchCount=1,
                         batchSections=f"  1. <h3>{missing_h3}</h3>",
