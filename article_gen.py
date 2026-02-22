@@ -1489,7 +1489,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
         # 3. Ensure minimum keyword density (~1%) — inject into paragraphs
         plain_text2 = re.sub(r'<[^>]+>', ' ', content_html)
         total_words_est = len(plain_text2.split())
-        target_occurrences = max(4, total_words_est // 200)  # ~1 per 200 words
+        target_occurrences = max(8, total_words_est // 120)  # ~1 per 120 words ≈ 1% density
         current_count = plain_text2.lower().count(kw_lower)
 
         if current_count < target_occurrences:

@@ -834,12 +834,17 @@ def ksj_build_image_meta(ctx: dict, prompt_used: str, ext: str = ".png") -> dict
         words = re.split(r"[,\.\s]+", _ksj_norm(prompt_used))
         title = " ".join(words[:10]) if words else "Datu sinhronizÄcija"
 
-    # Use article's focus keyword if available, fall back to global KSJ_KEYWORD
-    focus_kw = _ksj_norm(ctx.get("focusKeyword") or "") or KSJ_KEYWORD
+    # Use focusKeyword or primary as the SEO keyword for alt text
+    focus_kw = (
+        _ksj_norm(ctx.get("focusKeyword") or "")
+        or _ksj_norm(ctx.get("primary") or "")
+        or KSJ_KEYWORD
+    )
 
+    # Alt text: prioritize focus keyword presence
     alt = title
     if focus_kw.lower() not in alt.lower():
-        alt = f"{alt} - {focus_kw}"
+        alt = f"{focus_kw} - {title}"
     alt = _ksj_trunc(alt, 120)
 
     caption = title
