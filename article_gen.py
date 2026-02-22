@@ -1053,8 +1053,12 @@ MEGA_OUTLINE_USER = (
 MEGA_BATCH_USER = (
     "Raksta konteksts:\n"
     "Tēma: {primary} | Leņķis: {angle}\n"
-    "Raksta virsraksts: {title}\n"
-    "⚠️ Focus keyword (BURTISKI): '{focusKeyword}' — izmanto organiski 1-2 reizes katrā sadaļā.\n\n"
+    "Raksta virsraksts: {title}\n\n"
+    "⚠️ FOCUS KEYWORD (BURTISKI, NEMAINĪT): '{focusKeyword}'\n"
+    "OBLIGĀTI:\n"
+    "• Vismaz 1 no šīs grupas <h3> virsrakstiem JĀSATUR frāzi '{focusKeyword}'\n"
+    "• Katrā sadaļas HTML tekstā frāze '{focusKeyword}' jāparādās VISMAZ 1 reizi (organiski teikumā)\n"
+    "• Kopējais keyword blīvums visā rakstā: 1-1.5%\n\n"
     "Jau uzrakstītās sadaļas (neatkārto!):\n{previousContent}\n\n"
     "UZDEVUMS: Uzraksti PILNĀ DETALIZĀCIJĀ šīs {batchCount} sadaļas:\n{batchSections}\n\n"
     "⚠️ KATRAS SADAĻAS OBLIGĀTĀ STRUKTŪRA (VISMAZ {wordsPerSection} vārdi):\n"
@@ -1067,7 +1071,7 @@ MEGA_BATCH_USER = (
     "Atgriez JSON:\n"
     '{{\n'
     '  "sections": [\n'
-    '    {{"h3": "virsraksts", "html": "<p>ievads 3-4 teikumi...</p><p>soļi...</p><ul><li>detalizēts punkts...</li><li>...</li></ul><p>ROI dati...</p><p>pāreja...</p>"}}\n'
+    '    {{"h3": "virsraksts (vismaz 1 satur \'{focusKeyword}\')", "html": "<p>...{focusKeyword}...</p><p>soļi...</p><ul><li>...</li></ul><p>ROI...</p>"}}\n'
     '  ]\n'
     '}}'
 )
@@ -1234,6 +1238,65 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
     for s in all_sections:
         content_parts.append(f"<h3>{s['h3']}</h3>\n{s['html']}")
     content_html = sanitize_html(normalize_lv_headings("\n\n".join(content_parts)))
+
+    # ── Keyword safety net ────────────────────────────────────────────────
+    # Ensure focus keyword appears in content even if GPT didn't follow instructions
+    if focus_keyword:
+        kw_lower = focus_keyword.lower()
+        content_lower = content_html.lower()
+
+        # Check if keyword is in content at all
+        kw_count = content_lower.count(kw_lower)
+        logging.info(f"[mega] Keyword '{focus_keyword}' appears {kw_count} times in content")
+
+        # Ensure intro starts with keyword
+        if kw_lower not in content_lower[:500]:
+            # Prepend keyword sentence to first <p> after <h2>
+            kw_intro = f"<p><strong>{focus_keyword}</strong> ir aktuāla tēma, kas ietekmē ikvienu organizāciju. "
+            content_html = re.sub(
+                r'(<h2>[^<]*</h2>\s*)<p>',
+                rf'\1{kw_intro}',
+                content_html,
+                count=1,
+            )
+            logging.info("[mega] Injected keyword at content beginning")
+
+        # Ensure keyword appears in at least 2 H3 subheadings
+        h3_matches = re.findall(r'<h3>([^<]+)</h3>', content_html, re.IGNORECASE)
+        h3_with_kw = sum(1 for h in h3_matches if kw_lower in h.lower())
+        if h3_with_kw < 2 and h3_matches:
+            # Add keyword to first H3 that doesn't have it
+            replaced = 0
+            for h3_text in h3_matches:
+                if kw_lower not in h3_text.lower() and replaced < (2 - h3_with_kw):
+                    new_h3 = f"{focus_keyword}: {h3_text}"
+                    content_html = content_html.replace(
+                        f"<h3>{h3_text}</h3>",
+                        f"<h3>{new_h3}</h3>",
+                        1,
+                    )
+                    replaced += 1
+            logging.info(f"[mega] Added keyword to {replaced} H3 subheadings")
+
+        # Ensure minimum keyword density (~1%) — inject into sections if needed
+        total_words_est = len(re.sub(r'<[^>]+>', ' ', content_html).split())
+        target_occurrences = max(3, total_words_est // 150)  # ~1 per 150 words
+        current_count = content_html.lower().count(kw_lower)
+        if current_count < target_occurrences:
+            # Find <p> tags and inject keyword naturally
+            paragraphs = list(re.finditer(r'<p>([^<]{100,})</p>', content_html))
+            inject_count = min(target_occurrences - current_count, len(paragraphs) // 3)
+            step = max(1, len(paragraphs) // (inject_count + 1))
+            for i in range(0, min(inject_count, len(paragraphs)), 1):
+                idx = min(i * step, len(paragraphs) - 1)
+                p_match = paragraphs[idx]
+                old_p = p_match.group(0)
+                if kw_lower not in old_p.lower():
+                    # Append keyword mention at end of paragraph
+                    new_p = old_p.replace('</p>', f' Tieši {focus_keyword} nodrošina šo rezultātu.</p>')
+                    content_html = content_html.replace(old_p, new_p, 1)
+            final_count = content_html.lower().count(kw_lower)
+            logging.info(f"[mega] Keyword density boosted: {current_count} → {final_count} occurrences")
 
     total_words = count_words_from_html(content_html)
     logging.info(f"[mega] Assembly: {total_words} words from {len(all_sections)} sections (target {target_words})")
