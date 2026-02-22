@@ -987,7 +987,7 @@ def generate_section_html_with_validation(meta: dict, h3_title: str, target_word
     return html
 
 
-ARTICLE_MODE = (os.getenv("ARTICLE_MODE", "multi") or "multi").strip().lower()
+ARTICLE_MODE = (os.getenv("ARTICLE_MODE", "mega") or "mega").strip().lower()
 
 # =============================================================================
 # Plan B: Research phase — SERP data enrichment before article generation
@@ -1253,6 +1253,45 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
     focus_keyword = meta.get("focusKeyword", "") or ""
     title_hint = meta.get("titleHint", "") or ""
     max_tokens = get_dynamic_max_tokens(target_words)
+
+    # ── Auto-generate focusKeyword if missing ─────────────────────────────
+    if not focus_keyword:
+        logging.info("[mega] focusKeyword is empty, auto-generating from metadata")
+        try:
+            kw_result = generate_keywords_from_input(
+                {
+                    "primary": meta.get("primary", ""),
+                    "angle": meta.get("angle", ""),
+                    "audience": meta.get("audience", ""),
+                    "wpCategory": meta.get("wpCategory", ""),
+                    "tagsCsv": meta.get("tagsCsv", ""),
+                    "SeoSlug": meta.get("seoSlugHint", ""),
+                    "combokey": meta.get("primary", ""),
+                },
+                limit=5,
+                use_llm=True,
+                enrich=True,
+            )
+            if isinstance(kw_result, dict):
+                focus_keyword = (
+                    kw_result.get("top_recommendation")
+                    or (kw_result.get("candidates", [{}])[0].get("phrase") if kw_result.get("candidates") else "")
+                    or ""
+                )
+            if focus_keyword:
+                meta["focusKeyword"] = focus_keyword
+                logging.info(f"[mega] Auto-generated focusKeyword: '{focus_keyword}'")
+            else:
+                # Fallback: use primary topic as keyword
+                focus_keyword = meta.get("primary", "").strip()
+                if focus_keyword:
+                    meta["focusKeyword"] = focus_keyword
+                    logging.info(f"[mega] Fallback focusKeyword from primary: '{focus_keyword}'")
+        except Exception as e:
+            logging.warning(f"[mega] Auto keyword generation failed: {e}")
+            focus_keyword = meta.get("primary", "").strip()
+            if focus_keyword:
+                meta["focusKeyword"] = focus_keyword
 
     # ── Phase 0: Research ─────────────────────────────────────────────────
     research = {}
