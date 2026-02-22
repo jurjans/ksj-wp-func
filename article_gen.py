@@ -1023,17 +1023,26 @@ MEGA_OUTLINE_USER = (
     "Leņķis: {angle}\n"
     "Auditorija: {audience}\n"
     "Titula hints: {titleHint}\n"
-    "Focus keyword: {focusKeyword}\n"
     "Kategorija: {wpCategory}\n"
     "Mērķa garums: {targetWords} vārdi\n\n"
+    "⚠️ FOCUS KEYWORD (BURTISKI, NEMAINĪT): '{focusKeyword}'\n"
+    "Šī frāze jāizmanto TIEŠI TĀ KĀ RAKSTĪTA — nedrīkst mainīt vārdu secību, "
+    "pievienot vai noņemt vārdus, vai aizstāt ar sinonīmiem.\n\n"
+    "FOCUS KEYWORD OBLIGĀTĀ INTEGRĀCIJA:\n"
+    "• TITLE: JĀSĀKAS ar '{focusKeyword}' (pēc tam var turpināt ar ':' vai skaitli). "
+    "Piemērs: '{focusKeyword}: 7 soļi veiksmīgai ieviešanai'\n"
+    "• EXCERPT: Pirmajam teikumam JĀSĀKAS ar '{focusKeyword}'\n"
+    "• SEO SLUG: JĀSATUR '{focusKeywordSlug}'\n"
+    "• INTRO HTML: Pirmās <p> pirmajam teikumam JĀSĀKAS ar '{focusKeyword}'\n"
+    "• H3: Vismaz 2 virsrakstiem jāsatur '{focusKeyword}' vai tā daļa\n\n"
     "UZDEVUMS: Izveido raksta plānu un ievadu.\n\n"
     "JSON shēma:\n"
     '{{\n'
-    '  "title": "max 60 rakstz., sākas ar focus keyword, satur skaitli",\n'
-    '  "seoSlug": "ascii-lowercase-bez-diakritikam",\n'
-    '  "excerpt": "max 160 rakstz., sākas ar focus keyword",\n'
-    '  "introHtml": "<h2>Ievads</h2><p>150-200 vārdi: problēmas definīcija, kāpēc aktuāla</p>",\n'
-    '  "h3": ["8 konkrēti, darbīgi virsraksti latviski — katrs ar unikālu apakštēmu"],\n'
+    '  "title": "SĀKAS ar \'{focusKeyword}\', max 60 rakstz., satur skaitli",\n'
+    '  "seoSlug": "SATUR \'{focusKeywordSlug}\', ascii-lowercase",\n'
+    '  "excerpt": "SĀKAS ar \'{focusKeyword}\', max 160 rakstz.",\n'
+    '  "introHtml": "<h2>Ievads</h2><p>{focusKeyword} ir... (150-200 vārdi)</p>",\n'
+    '  "h3": ["8 konkrēti virsraksti, vismaz 2 satur \'{focusKeyword}\' vai tā daļu"],\n'
     '  "category": "{wpCategory}",\n'
     '  "tags": ["3-6 latviski termini"],\n'
     '  "tagSlugs": ["ascii-slug"],\n'
@@ -1043,20 +1052,22 @@ MEGA_OUTLINE_USER = (
 
 MEGA_BATCH_USER = (
     "Raksta konteksts:\n"
-    "Tēma: {primary} | Leņķis: {angle} | Focus keyword: {focusKeyword}\n"
-    "Raksta virsraksts: {title}\n\n"
+    "Tēma: {primary} | Leņķis: {angle}\n"
+    "Raksta virsraksts: {title}\n"
+    "⚠️ Focus keyword (BURTISKI): '{focusKeyword}' — izmanto organiski 1-2 reizes katrā sadaļā.\n\n"
     "Jau uzrakstītās sadaļas (neatkārto!):\n{previousContent}\n\n"
     "UZDEVUMS: Uzraksti PILNĀ DETALIZĀCIJĀ šīs {batchCount} sadaļas:\n{batchSections}\n\n"
-    "Katra sadaļa OBLIGĀTI satur:\n"
-    "• 2-3 rindkopas ar pilnām detaļām un Microsoft 365 UI soļiem\n"
-    "• 1 sarakstu (<ul>/<ol>) ar 4-6 praktiskiem punktiem\n"
-    "• 1 ROI rindkopu ar konkrētiem skaitļiem\n"
-    "• 1 pārejas teikumu uz nākamo sadaļu\n"
-    "• VISMAZ {wordsPerSection} vārdi katrā sadaļā\n\n"
+    "⚠️ KATRAS SADAĻAS OBLIGĀTĀ STRUKTŪRA (VISMAZ {wordsPerSection} vārdi):\n"
+    "1. Ievada rindkopa: kāpēc šī tēma svarīga — ar konkrētu problēmu (3-4 teikumi)\n"
+    "2. Praktiskie soļi: 2-3 rindkopas ar Microsoft 365 UI terminus un konfigurācijas aprakstiem\n"
+    "3. Saraksts: <ul> vai <ol> ar 4-6 detalizētiem punktiem (katrs punkts 1-2 teikumi)\n"
+    "4. ROI rindkopa: konkrēti skaitļi kā diapazoni ar kontekstu\n"
+    "5. Pārejas teikums uz nākamo sadaļu\n\n"
+    "NEDRĪKST: saīsināt sadaļu līdz 1-2 rindkopām. Katra sadaļa ir PILNS, detalizēts apraksts.\n\n"
     "Atgriez JSON:\n"
     '{{\n'
     '  "sections": [\n'
-    '    {{"h3": "virsraksts", "html": "<p>pilns saturs...</p><ul><li>...</li></ul><p>ROI...</p>"}}\n'
+    '    {{"h3": "virsraksts", "html": "<p>ievads 3-4 teikumi...</p><p>soļi...</p><ul><li>detalizēts punkts...</li><li>...</li></ul><p>ROI dati...</p><p>pāreja...</p>"}}\n'
     '  ]\n'
     '}}'
 )
@@ -1099,6 +1110,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
         audience=meta.get("audience", ""),
         titleHint=title_hint,
         focusKeyword=focus_keyword,
+        focusKeywordSlug=slugify(focus_keyword) if focus_keyword else "",
         wpCategory=meta.get("wpCategory", "SharePoint"),
         targetWords=target_words,
     )
@@ -1133,7 +1145,8 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
 
     # ── Phase 2: Generate sections in batches ─────────────────────────────
     BATCH_SIZE = int(os.getenv("MEGA_BATCH_SIZE", "4"))
-    words_per_section = max(200, target_words // len(h3_list))
+    # Ask for 1.5x words per section — GPT consistently underdelivers in JSON mode
+    words_per_section = max(250, int((target_words / len(h3_list)) * 1.5))
     all_sections: list[dict] = []
 
     for batch_start in range(0, len(h3_list), BATCH_SIZE):
