@@ -401,14 +401,14 @@ def normalize_lv_headings(html: str) -> str:
         (r"\bbest\s*practices?\b\s*:?", "Labākā prakse"),
         (r"\boverview\b\s*:?", "Pārskats"),
         (r"\bintroduction\b\s*:?", "Ievads"),
-        (r"\bfaq(s)?\b\s*:?", "Biežāk uzdotie jautājumi"),
+        (r"\bfaq(s)?\b(\s*:)?", "Biežāk uzdotie jautājumi"),
     ]
 
     def apply_map(s: str) -> str:
         out = s
         for pat, repl in patterns:
             out = re.sub(pat, repl, out, flags=re.I)
-        return out
+        return re.sub(r"  +", " ", out).strip()
 
     def _repl_h(m: re.Match) -> str:
         tag = m.group(1)
