@@ -375,6 +375,56 @@ def _tick_once(op_id: str) -> dict:
     state["meta"] = meta
     target_words = int(state.get("targetWords", 5000))
 
+    # ── Mega mode: detect on first tick and complete in one step ──────────
+    from article_gen import ARTICLE_MODE, build_wp_article_mega
+    req_mode = (item.get("articleMode") or "").strip().lower() if isinstance(item, dict) else ""
+    effective_mode = req_mode or ARTICLE_MODE
+    if effective_mode == "mega" and state["phase"] == "outline":
+        state["phase"] = "mega"
+        _state_save(op_id, state)
+
+    if state["phase"] == "mega":
+        _progress(op_id, "mega", 0, 1)
+        data = build_wp_article_mega(meta, target_words)
+        data = normalize_tags(data, meta)
+        try:
+            names = data.get("tags") or []
+            slugs_list = data.get("tagSlugs") or []
+            if names and slugs_list and not data.get("wpTagIds"):
+                api_base = os.environ.get("WP_API_BASE")
+                if api_base:
+                    data["wpTagIds"] = ensure_wp_tag_ids(
+                        api_base, os.getenv("WP_TOKEN", ""),
+                        names=names, slugs=slugs_list,
+                    )
+                else:
+                    data["wpTagIds"] = []
+        except Exception as _e:
+            logging.warning(f"[wpTagIds] mega mode failed: {_e}")
+            data["wpTagIds"] = data.get("wpTagIds") or []
+        if "wpTagIds" not in data or data["wpTagIds"] is None:
+            data["wpTagIds"] = []
+
+        bc = _blob_client(op_id)
+        bc.upload_blob(
+            json.dumps(data, ensure_ascii=False).encode("utf-8"),
+            overwrite=True,
+        )
+        sas = _make_sas_url(op_id)
+        _status_upsert(op_id, "done",
+            blobPath=f"{RESULT_CONTAINER}/{op_id}.json",
+            blobUrl=sas or "",
+        )
+        try:
+            _work_blob_client(op_id).delete_blob()
+        except Exception:
+            pass
+        state["phase"] = "done"
+        _state_save(op_id, state)
+        return state
+
+    # ── Multi mode (original flow) ────────────────────────────────────────
+
     if state["phase"] == "outline":
         outline = generate_draft_outline(meta, target_words)
         state["outline"] = outline
