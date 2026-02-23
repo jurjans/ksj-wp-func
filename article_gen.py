@@ -1873,6 +1873,9 @@ def build_papildu_lasamviela(
     )
 
     return html
+
+
+def build_wp_article_from_item(item: dict) -> dict:
     incoming = item or {}
     picked = pick_item(incoming)
     meta = extract_meta(picked)
