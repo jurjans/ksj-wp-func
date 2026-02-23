@@ -1720,12 +1720,12 @@ def _generate_link_descriptions(
         f"Focus keyword: \"{focus_keyword}\"\n\n"
         f"KSJ RAKSTI (vajag 1-2 teikumu aprakstu katram, kā šis raksts saistās ar galveno tēmu):\n"
         f"{ksj_items_text}\n\n"
-        f"MICROSOFT RESURSI (vajag virsrakstu latviski katram, 5-10 vārdi):\n"
+        f"MICROSOFT RESURSI (vajag virsrakstu latviski 5-10 vārdi + 1 teikuma aprakstu katram):\n"
         f"{ms_items_text}\n\n"
         f"JSON formāts:\n"
         f'{{\n'
         f'  "ksj": [{{"index": 1, "desc": "Īss apraksts latviski..."}}],\n'
-        f'  "ms": [{{"index": 1, "title_lv": "Virsraksts latviski"}}]\n'
+        f'  "ms": [{{"index": 1, "title_lv": "Virsraksts latviski", "desc": "Īss apraksts..."}}]\n'
         f'}}'
     )
 
@@ -1748,10 +1748,12 @@ def _generate_link_descriptions(
             ksj_result.append({"url": item["url"], "title": item["title"], "desc": desc})
 
         ms_result = []
-        ms_titles = {d["index"]: d.get("title_lv", "") for d in (outer.get("ms") or [])}
+        ms_data = {d["index"]: d for d in (outer.get("ms") or [])}
         for i, item in enumerate(ms_links):
-            title_lv = ms_titles.get(i + 1, "") or item["title"]
-            ms_result.append({"url": item["url"], "title_lv": title_lv})
+            d = ms_data.get(i + 1, {})
+            title_lv = d.get("title_lv", "") or item["title"]
+            desc = d.get("desc", "")
+            ms_result.append({"url": item["url"], "title_lv": title_lv, "desc": desc})
 
         return {"ksj": ksj_result, "ms": ms_result}
     except Exception as e:
@@ -1759,7 +1761,7 @@ def _generate_link_descriptions(
         # Return raw data without descriptions
         return {
             "ksj": [{"url": l["url"], "title": l["title"], "desc": ""} for l in ksj_links],
-            "ms": [{"url": l["url"], "title_lv": l["title"]} for l in ms_links],
+            "ms": [{"url": l["url"], "title_lv": l["title"], "desc": ""} for l in ms_links],
         }
 
 
@@ -1788,9 +1790,12 @@ def _build_reading_html(
     ms_items_html = ""
     for item in ms_links:
         title = item.get("title_lv") or item.get("title") or ""
+        desc_html = ""
+        if item.get("desc"):
+            desc_html = f'<br>\n          <small style="color:#666;">{item["desc"]}</small>'
         ms_items_html += (
             f'        <li style="margin-bottom:8px;">\n'
-            f'          <a href="{item["url"]}" target="_blank" rel="noopener noreferrer">{title}</a>\n'
+            f'          <a href="{item["url"]}" target="_blank" rel="noopener noreferrer">{title}</a>{desc_html}\n'
             f'        </li>\n'
         )
 
@@ -1830,12 +1835,11 @@ def _build_reading_html(
         f'  <div style="display:flex;flex-wrap:wrap;gap:24px;">\n'
         f'{ksj_col}{ms_col}'
         f'  </div>\n'
-        f'  <p style="text-align:center;margin:28px 0 0;">\n'
-        f'    <a href="https://ksj.lv/kontakti/"\n'
-        f'      style="display:inline-block;background:#2b8a3e;color:#ffffff;'
-        f'padding:12px 22px;border-radius:6px;text-decoration:none;font-weight:600;">\n'
-        f'      {cta_text}\n'
-        f'    </a>\n'
+        f'  <p style="text-align:center;margin:18px 0 0;">\n'
+        f'    <a href="https://ksj.lv/kontakti/" '
+        f'style="display:inline-block;background:#2b8a3e;color:#ffffff;'
+        f'padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:600;'
+        f'font-size:15px;line-height:1.4;">{cta_text}</a>\n'
         f'  </p>\n'
         f'</div>'
     )
