@@ -165,9 +165,11 @@ def slugify(text: str) -> str:
     if not text:
         return ""
     s = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    # Replace dots with hyphens (matches WordPress sanitize_title behavior)
+    s = s.replace(".", "-")
     s = re.sub(r"[^a-zA-Z0-9\-\s]", "", s)
     s = re.sub(r"\s+", "-", s.strip().lower())
-    return re.sub(r"-{2,}", "-", s)
+    return re.sub(r"-{2,}", "-", s).strip("-")
 
 
 # ==== LLM HTTP helperi =======================================================
