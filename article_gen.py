@@ -1542,11 +1542,337 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
     if issues:
         logging.info(f"[mega] Quality issues: {issues}")
 
+    # ── Phase 4: "Papildu lasāmviela" block ───────────────────────────────
+    try:
+        reading_block = build_papildu_lasamviela(
+            meta=meta,
+            research=research,
+            focus_keyword=focus_keyword,
+            title=title,
+        )
+        if reading_block:
+            data["contentHtml"] = data["contentHtml"].rstrip() + "\n\n" + reading_block
+            logging.info("[mega] Appended 'Papildu lasāmviela' block")
+    except Exception as e:
+        logging.warning(f"[mega] Papildu lasāmviela failed (skipping): {e}")
+
     logging.info(f"[mega] Done: {total_words} words, {len(all_sections)} sections (target {target_words})")
     return data
 
 
-def build_wp_article_from_item(item: dict) -> dict:
+# =============================================================================
+# "Papildu lasāmviela" — related links block
+# =============================================================================
+
+def _fetch_ksj_related_posts(focus_keyword: str, title: str, limit: int = 4) -> list[dict]:
+    """
+    Query ksj.lv WP REST API for related published posts.
+    Returns list of {"url": ..., "title": ...}.
+    """
+    api_base = (os.environ.get("WP_API_BASE") or "").rstrip("/")
+    if not api_base:
+        return []
+
+    results = []
+    # Try multiple search queries to find relevant posts
+    search_terms = [focus_keyword]
+    # Add first meaningful word from keyword (e.g., "SharePoint" from "SharePoint AI FAQ Web Part")
+    parts = focus_keyword.split()
+    if len(parts) > 1:
+        search_terms.append(parts[0])
+
+    seen_ids = set()
+    for term in search_terms:
+        if len(results) >= limit:
+            break
+        try:
+            resp = requests.get(
+                f"{api_base}/wp/v2/posts",
+                params={
+                    "search": term,
+                    "per_page": limit + 2,
+                    "status": "publish",
+                    "_fields": "id,title,link,slug",
+                    "orderby": "relevance",
+                },
+                timeout=8,
+            )
+            if resp.status_code == 200:
+                posts = resp.json()
+                for p in posts:
+                    pid = p.get("id")
+                    link = (p.get("link") or "").strip()
+                    ptitle = (p.get("title", {}).get("rendered") or "").strip()
+                    # Skip the article we're currently generating
+                    if not link or not ptitle or pid in seen_ids:
+                        continue
+                    # Skip if title matches current article too closely
+                    if ptitle.lower() == title.lower():
+                        continue
+                    seen_ids.add(pid)
+                    results.append({"url": link, "title": ptitle})
+                    if len(results) >= limit:
+                        break
+        except Exception as e:
+            logging.debug(f"[papildu] WP search '{term}' failed: {e}")
+
+    logging.info(f"[papildu] Found {len(results)} KSJ related posts")
+    return results[:limit]
+
+
+def _fetch_ms_docs_links(
+    research: dict, focus_keyword: str, limit: int = 4
+) -> list[dict]:
+    """
+    Get verified Microsoft docs links. Sources:
+    1. Research phase en_links (already found)
+    2. Targeted SerpApi search for learn.microsoft.com
+    Returns list of {"url": ..., "title": ...}.
+    """
+    results = []
+    seen_urls = set()
+
+    # Source 1: research phase already found MS links
+    en_links = research.get("en_links") or []
+    en_titles = research.get("en_titles") or []
+    for i, link in enumerate(en_links):
+        if link in seen_urls:
+            continue
+        # Try to get title from same-index en_titles or from URL
+        title = en_titles[i] if i < len(en_titles) else ""
+        if not title:
+            # Extract readable title from URL path
+            path = link.rstrip("/").split("/")[-1]
+            title = path.replace("-", " ").title()
+        seen_urls.add(link)
+        results.append({"url": link, "title": title})
+        if len(results) >= limit:
+            break
+
+    # Source 2: targeted SerpApi search if we need more
+    if len(results) < limit:
+        try:
+            ms_query = f"{focus_keyword} site:learn.microsoft.com"
+            serp = serp_search_cached(ms_query, ttl=DEFAULT_TTL * 4)
+            if serp:
+                for r in serp.get("organic_results", [])[:limit * 2]:
+                    link = (r.get("link") or "").strip()
+                    title = (r.get("title") or "").strip()
+                    if not link or link in seen_urls:
+                        continue
+                    if "learn.microsoft.com" not in link and "microsoft.com" not in link:
+                        continue
+                    seen_urls.add(link)
+                    results.append({"url": link, "title": title})
+                    if len(results) >= limit:
+                        break
+        except Exception as e:
+            logging.debug(f"[papildu] MS docs SerpApi search failed: {e}")
+
+    # Verify links are alive (quick HEAD check)
+    verified = []
+    for item in results[:limit + 2]:
+        try:
+            resp = requests.head(item["url"], timeout=5, allow_redirects=True)
+            if resp.status_code < 400:
+                verified.append(item)
+                if len(verified) >= limit:
+                    break
+        except Exception:
+            # Skip broken links
+            continue
+
+    logging.info(
+        f"[papildu] MS docs: {len(results)} found, {len(verified)} verified"
+    )
+    return verified[:limit]
+
+
+def _generate_link_descriptions(
+    ksj_links: list[dict],
+    ms_links: list[dict],
+    focus_keyword: str,
+    article_title: str,
+) -> dict:
+    """
+    Use GPT to generate Latvian descriptions for KSJ links
+    and Latvian titles for MS docs links.
+    Returns {"ksj": [{"url","title","desc"},...], "ms": [{"url","title_lv"},...]}
+    """
+    if not ksj_links and not ms_links:
+        return {"ksj": [], "ms": []}
+
+    ksj_items_text = "\n".join(
+        f"- {i+1}. \"{item['title']}\" ({item['url']})"
+        for i, item in enumerate(ksj_links)
+    )
+    ms_items_text = "\n".join(
+        f"- {i+1}. \"{item['title']}\" ({item['url']})"
+        for i, item in enumerate(ms_links)
+    )
+
+    system = (
+        "Tu ģenerē īsus aprakstus un virsrakstus latviešu valodā. "
+        "Atbildi TIKAI ar derīgu JSON."
+    )
+    user = (
+        f"Raksta virsraksts: \"{article_title}\"\n"
+        f"Focus keyword: \"{focus_keyword}\"\n\n"
+        f"KSJ RAKSTI (vajag 1-2 teikumu aprakstu katram, kā šis raksts saistās ar galveno tēmu):\n"
+        f"{ksj_items_text}\n\n"
+        f"MICROSOFT RESURSI (vajag virsrakstu latviski katram, 5-10 vārdi):\n"
+        f"{ms_items_text}\n\n"
+        f"JSON formāts:\n"
+        f'{{\n'
+        f'  "ksj": [{{"index": 1, "desc": "Īss apraksts latviski..."}}],\n'
+        f'  "ms": [{{"index": 1, "title_lv": "Virsraksts latviski"}}]\n'
+        f'}}'
+    )
+
+    try:
+        payload = {
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": 800,
+            "temperature": 0.4,
+        }
+        outer = chat_json(payload)
+
+        # Merge descriptions back into link data
+        ksj_result = []
+        ksj_descs = {d["index"]: d.get("desc", "") for d in (outer.get("ksj") or [])}
+        for i, item in enumerate(ksj_links):
+            desc = ksj_descs.get(i + 1, "")
+            ksj_result.append({"url": item["url"], "title": item["title"], "desc": desc})
+
+        ms_result = []
+        ms_titles = {d["index"]: d.get("title_lv", "") for d in (outer.get("ms") or [])}
+        for i, item in enumerate(ms_links):
+            title_lv = ms_titles.get(i + 1, "") or item["title"]
+            ms_result.append({"url": item["url"], "title_lv": title_lv})
+
+        return {"ksj": ksj_result, "ms": ms_result}
+    except Exception as e:
+        logging.warning(f"[papildu] GPT link descriptions failed: {e}")
+        # Return raw data without descriptions
+        return {
+            "ksj": [{"url": l["url"], "title": l["title"], "desc": ""} for l in ksj_links],
+            "ms": [{"url": l["url"], "title_lv": l["title"]} for l in ms_links],
+        }
+
+
+def _build_reading_html(
+    ksj_links: list[dict],
+    ms_links: list[dict],
+    focus_keyword: str,
+) -> str:
+    """Build the HTML block for Papildu lasāmviela."""
+    if not ksj_links and not ms_links:
+        return ""
+
+    # KSJ column
+    ksj_items_html = ""
+    for item in ksj_links:
+        desc_html = ""
+        if item.get("desc"):
+            desc_html = f'<br>\n          <small style="color:#666;">{item["desc"]}</small>'
+        ksj_items_html += (
+            f'        <li style="margin-bottom:8px;">\n'
+            f'          <a href="{item["url"]}">{item["title"]}</a>{desc_html}\n'
+            f'        </li>\n'
+        )
+
+    # MS column
+    ms_items_html = ""
+    for item in ms_links:
+        title = item.get("title_lv") or item.get("title") or ""
+        ms_items_html += (
+            f'        <li style="margin-bottom:8px;">\n'
+            f'          <a href="{item["url"]}" target="_blank" rel="noopener noreferrer">{title}</a>\n'
+            f'        </li>\n'
+        )
+
+    # CTA text
+    cta_topic = focus_keyword
+    if len(cta_topic) > 40:
+        cta_topic = " ".join(cta_topic.split()[:4])
+    cta_text = f"Sazinieties ar KSJ par {cta_topic}"
+
+    # Build two-column layout
+    ksj_col = ""
+    if ksj_items_html:
+        ksj_col = (
+            f'    <div style="flex:1 1 320px;min-width:240px;">\n'
+            f'      <strong>Saistītie KSJ raksti</strong>\n'
+            f'      <ul style="margin:8px 0 14px 18px;padding:0;color:#222;">\n'
+            f'{ksj_items_html}'
+            f'      </ul>\n'
+            f'    </div>\n'
+        )
+
+    ms_col = ""
+    if ms_items_html:
+        ms_col = (
+            f'    <div style="flex:1 1 320px;min-width:240px;">\n'
+            f'      <strong>Oficiālie resursi</strong>\n'
+            f'      <ul style="margin:8px 0 14px 18px;padding:0;color:#222;">\n'
+            f'{ms_items_html}'
+            f'      </ul>\n'
+            f'    </div>\n'
+        )
+
+    html = (
+        f'<h2>Papildu lasāmviela</h2>\n'
+        f'<div style="border:1px solid #e6e6e6;padding:22px;border-radius:8px;'
+        f'background:#fbfbfb;font-family:Arial,Helvetica,sans-serif;color:#222;margin-top:28px;">\n'
+        f'  <div style="display:flex;flex-wrap:wrap;gap:24px;">\n'
+        f'{ksj_col}{ms_col}'
+        f'  </div>\n'
+        f'  <p style="text-align:center;margin:28px 0 0;">\n'
+        f'    <a href="https://ksj.lv/kontakti/"\n'
+        f'      style="display:inline-block;background:#2b8a3e;color:#ffffff;'
+        f'padding:12px 22px;border-radius:6px;text-decoration:none;font-weight:600;">\n'
+        f'      {cta_text}\n'
+        f'    </a>\n'
+        f'  </p>\n'
+        f'</div>'
+    )
+    return html
+
+
+def build_papildu_lasamviela(
+    meta: dict,
+    research: dict,
+    focus_keyword: str,
+    title: str,
+) -> str:
+    """
+    Main entry point: fetch links, generate descriptions, build HTML.
+    Returns empty string if insufficient data.
+    """
+    # Fetch KSJ related posts
+    ksj_links = _fetch_ksj_related_posts(focus_keyword, title, limit=4)
+
+    # Fetch MS docs links (from research + SerpApi)
+    ms_links = _fetch_ms_docs_links(research, focus_keyword, limit=4)
+
+    if not ksj_links and not ms_links:
+        logging.info("[papildu] No links found, skipping block")
+        return ""
+
+    # Generate Latvian descriptions via GPT
+    enriched = _generate_link_descriptions(ksj_links, ms_links, focus_keyword, title)
+
+    # Build HTML
+    html = _build_reading_html(
+        ksj_links=enriched.get("ksj") or ksj_links,
+        ms_links=enriched.get("ms") or ms_links,
+        focus_keyword=focus_keyword,
+    )
+
+    return html
     incoming = item or {}
     picked = pick_item(incoming)
     meta = extract_meta(picked)
