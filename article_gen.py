@@ -1556,8 +1556,127 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
     except Exception as e:
         logging.warning(f"[mega] Papildu lasāmviela failed (skipping): {e}")
 
+    # ── Phase 5: Table of Contents ─────────────────────────────────────────
+    try:
+        data["contentHtml"] = inject_toc(data["contentHtml"])
+        logging.info("[mega] Injected Table of Contents")
+    except Exception as e:
+        logging.warning(f"[mega] ToC injection failed (skipping): {e}")
+
     logging.info(f"[mega] Done: {total_words} words, {len(all_sections)} sections (target {target_words})")
     return data
+
+
+# =============================================================================
+# Table of Contents generator
+# =============================================================================
+
+def _heading_to_anchor(text: str) -> str:
+    """Convert heading text to URL-friendly anchor ID, matching Rank Math style."""
+    s = text.lower().strip()
+    # Latvian diacritics → ASCII
+    mapping = str.maketrans({
+        "ā": "a", "č": "c", "ē": "e", "ģ": "g", "ī": "i", "ķ": "k",
+        "ļ": "l", "ņ": "n", "š": "s", "ū": "u", "ž": "z",
+        "Ā": "a", "Č": "c", "Ē": "e", "Ģ": "g", "Ī": "i", "Ķ": "k",
+        "Ļ": "l", "Ņ": "n", "Š": "s", "Ū": "u", "Ž": "z",
+    })
+    s = s.translate(mapping)
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = re.sub(r"[^a-z0-9\s-]", "", s)
+    s = re.sub(r"\s+", "-", s.strip())
+    s = re.sub(r"-{2,}", "-", s).strip("-")
+    return s or "section"
+
+
+def inject_toc(html: str) -> str:
+    """
+    Parse headings from contentHtml, add anchor IDs, and prepend a
+    Rank Math compatible Table of Contents block.
+    """
+    if not html:
+        return html
+
+    # Find all h2 and h3 headings
+    heading_re = re.compile(r"<(h[23])(?:\s[^>]*)?>(.+?)</\1>", re.I | re.S)
+    headings = []
+    seen_anchors = set()
+
+    for m in heading_re.finditer(html):
+        tag = m.group(1).lower()
+        text = re.sub(r"<[^>]+>", "", m.group(2)).strip()  # strip inner HTML
+        if not text:
+            continue
+        anchor = _heading_to_anchor(text)
+        # Ensure uniqueness
+        base_anchor = anchor
+        counter = 1
+        while anchor in seen_anchors:
+            anchor = f"{base_anchor}-{counter}"
+            counter += 1
+        seen_anchors.add(anchor)
+        headings.append({"tag": tag, "text": text, "anchor": anchor, "match": m})
+
+    if len(headings) < 3:
+        # Too few headings, skip ToC
+        return html
+
+    # Add id attributes to headings in HTML (process from end to avoid offset issues)
+    modified = html
+    for h in reversed(headings):
+        m = h["match"]
+        tag = h["tag"]
+        old_tag_open = m.group(0)[:m.group(0).index(">") + 1]
+        # Replace opening tag with one that has id attribute
+        new_tag_open = f'<{tag} id="{h["anchor"]}">'
+        modified = modified[:m.start()] + m.group(0).replace(old_tag_open, new_tag_open, 1) + modified[m.end():]
+
+    # Build ToC HTML matching Rank Math format
+    toc_items = []
+    current_h2_children = []
+    current_h2 = None
+
+    for h in headings:
+        if h["tag"] == "h2":
+            # Close previous h2 group
+            if current_h2 is not None:
+                toc_items.append((current_h2, current_h2_children))
+            current_h2 = h
+            current_h2_children = []
+        else:  # h3
+            current_h2_children.append(h)
+
+    # Close last h2 group
+    if current_h2 is not None:
+        toc_items.append((current_h2, current_h2_children))
+
+    # Build nested list HTML
+    li_parts = []
+    for h2, children in toc_items:
+        if children:
+            child_lis = "\n".join(
+                f'<li class=""><a href="#{c["anchor"]}">{c["text"]}</a></li>'
+                for c in children
+            )
+            li_parts.append(
+                f'<li class=""><a href="#{h2["anchor"]}">{h2["text"]}</a>'
+                f'<ul>{child_lis}</ul></li>'
+            )
+        else:
+            li_parts.append(
+                f'<li class=""><a href="#{h2["anchor"]}">{h2["text"]}</a></li>'
+            )
+
+    toc_html = (
+        '<div class="wp-block-rank-math-toc-block" id="rank-math-toc">'
+        '<h2>Saturs</h2>'
+        '<nav><ul>'
+        + "\n".join(li_parts)
+        + '</ul></nav></div>'
+    )
+
+    # Insert ToC at the very beginning of content
+    return toc_html + "\n\n" + modified
 
 
 # =============================================================================
