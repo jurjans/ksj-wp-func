@@ -1252,6 +1252,14 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
         logging.info(f"[mega] Capping target from {target_words} to {MEGA_MAX_WORDS}")
         target_words = MEGA_MAX_WORDS
 
+    # GPT typically produces 75-90% of requested words; inflate by 25% so output
+    # lands above the user's actual target
+    original_target = target_words
+    target_words = int(target_words * 1.25)
+    if target_words > MEGA_MAX_WORDS:
+        target_words = MEGA_MAX_WORDS
+    logging.info(f"[mega] Target inflated: {original_target} → {target_words} words")
+
     focus_keyword = meta.get("focusKeyword", "") or ""
     title_hint = meta.get("titleHint", "") or ""
     max_tokens = get_dynamic_max_tokens(target_words)
