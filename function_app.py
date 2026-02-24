@@ -348,7 +348,7 @@ def ok(**payload) -> func.HttpResponse:
     )
 
 from fb_gen import generate_fb_copy
-
+from content_plan import generate_content_plan
 # =============================================================================
 # Async worker core ("tick" model for long article generation)
 # =============================================================================
@@ -1075,4 +1075,42 @@ def whoami_images(req: func.HttpRequest) -> func.HttpResponse:
         has_AZURE_TEXT=bool(
             os.getenv("AZURE_OPENAI_ENDPOINT") and os.getenv("AZURE_OPENAI_API_KEY")
         ),
+    )
+# =============================================================================
+# HTTP: Monthly content plan generator
+# =============================================================================
+@app.function_name(name="generate_content_plan")
+@app.route(
+    route="generate-content-plan",
+    methods=["POST"],
+    auth_level=func.AuthLevel.FUNCTION,
+)
+def generate_content_plan_endpoint(req: func.HttpRequest) -> func.HttpResponse:
+    incoming = read_incoming(req)
+    if not incoming:
+        incoming = {}
+
+    target_month = (incoming.get("targetMonth") or "").strip() or None
+    existing_titles = incoming.get("existingTitles") or {}
+    categories = incoming.get("categories") or None
+    try:
+        articles_per_day = int(incoming.get("articlesPerDay", 1))
+    except Exception:
+        articles_per_day = 1
+
+    try:
+        result = generate_content_plan(
+            target_month=target_month,
+            existing_titles=existing_titles,
+            categories=categories,
+            articles_per_day=articles_per_day,
+        )
+    except Exception as e:
+        logging.exception("generate_content_plan failed")
+        return bad(500, error="plan_generation_failed", message=str(e)[:500])
+
+    return func.HttpResponse(
+        json.dumps(result, ensure_ascii=False),
+        status_code=200,
+        mimetype="application/json",
     )
