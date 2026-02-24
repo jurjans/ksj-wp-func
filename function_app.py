@@ -1097,7 +1097,16 @@ def generate_content_plan_endpoint(req: func.HttpRequest) -> func.HttpResponse:
         articles_per_day = int(incoming.get("articlesPerDay", 1))
     except Exception:
         articles_per_day = 1
-
+# Accept flat array from Power Automate and group by category
+    existing_items = incoming.get("existingItems") or []
+    if existing_items and not existing_titles:
+        existing_titles = {}
+        for item in existing_items:
+            cat = (item.get("WpCategory") or item.get("wpCategory") or "").strip()
+            title = (item.get("Title") or item.get("title") or "").strip()
+            if cat and title:
+                existing_titles.setdefault(cat, []).append(title)
+                
     try:
         result = generate_content_plan(
             target_month=target_month,
