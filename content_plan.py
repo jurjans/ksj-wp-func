@@ -18,6 +18,7 @@ Output:
 import json
 import logging
 import os
+import random
 import calendar
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
@@ -204,8 +205,8 @@ def generate_content_plan(
         existing_for_cat = existing.get(cat, [])
 
         # Assign phases/styles with rotation
-        phases = [PHASES[i % len(PHASES)] for i in range(count)]
-        styles = [IMAGE_STYLES[i % len(IMAGE_STYLES)] for i in range(count)]
+        phases = [random.choice(PHASES) for _ in range(count)]
+        styles = [random.choice(IMAGE_STYLES) for _ in range(count)]
 
         # GPT call
         payload = _build_batch_prompt(
