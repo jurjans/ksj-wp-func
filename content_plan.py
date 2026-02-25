@@ -32,7 +32,7 @@ DEFAULT_CATEGORIES = [
     "SharePoint",
     "AI & Copilot",
     "Teams & Copilot",
-    "\u2014 SharePoint no nulles",
+    "SharePoint no nulles",
     "SPFx/Dev",
     "Microsoft 365 jaunumi",
     "Dro\u0161\u012bba & Atbilst\u012bba",
