@@ -694,10 +694,20 @@ def refine_full_article(
     if focus_keyword:
         keyword_count = content_html.lower().count(focus_keyword.lower())
         keyword_density = (keyword_count / max(1, current_words)) * 100
+        ideal_min = int(current_words * 0.010)  # 1.0%
+        ideal_max = int(current_words * 0.015)  # 1.5%
+
+        if keyword_density < 1.0:
+            density_action = f"PĀRĀK ZEMS ({keyword_density:.2f}%). Pievieno vēl {ideal_min - keyword_count} atkārtojumus organiski."
+        elif keyword_density > 1.5:
+            density_action = f"PĀRĀK AUGSTS ({keyword_density:.2f}%). Samazini par {keyword_count - ideal_max} — aizstāj ar sinonīmiem vai pārfrāzē."
+        else:
+            density_action = f"LABI ({keyword_density:.2f}%). Nemainīt."
+
         focus_keyword_quality = (
             f"\nFOCUS KEYWORD KVALITĀTE: '{focus_keyword}'"
-            f"\n- Pašreizējais blīvums: {keyword_density:.2f}% (mērķis: 1-1.5%)"
-            f"\n- Nepieciešams: {max(1, int(current_words * 0.01) - keyword_count)} papildu parādīšanās"
+            f"\n- Pašreizējais: {keyword_count}× ({keyword_density:.2f}%), mērķis: {ideal_min}-{ideal_max}× (1-1.5%)"
+            f"\n- DARBĪBA: {density_action}"
             f"\n- Pārliecinies, ka keywords parādās:"
             f"\n  * Pirmajā rindkopā"
             f"\n  * Vismaz 2-3 apakšvirsrakstos (h2/h3)"
