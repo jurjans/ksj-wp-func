@@ -374,7 +374,7 @@ def _tick_once(op_id: str) -> dict:
     meta = state.get("meta") or extract_meta(pick_item(item))
     state["meta"] = meta
     raw_target = int(state.get("targetWords", 5000))
-    target_words = int(raw_target * 1.40)  # GPT produces ~70% of requested; inflate
+    target_words = int(raw_target * 1.75)  # GPT produces ~70% of requested; inflate
 
     # ── Mega mode: detect on first tick and complete in one step ──────────
     from article_gen import ARTICLE_MODE, build_wp_article_mega
