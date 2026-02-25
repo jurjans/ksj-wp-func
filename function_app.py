@@ -348,7 +348,7 @@ def ok(**payload) -> func.HttpResponse:
     )
 
 from fb_gen import generate_fb_copy
-from content_plan import generate_content_plan
+
 # =============================================================================
 # Async worker core ("tick" model for long article generation)
 # =============================================================================
@@ -374,57 +374,7 @@ def _tick_once(op_id: str) -> dict:
     meta = state.get("meta") or extract_meta(pick_item(item))
     state["meta"] = meta
     raw_target = int(state.get("targetWords", 5000))
-    target_words = int(raw_target * 1.75)  # GPT produces ~70% of requested; inflate
-
-    # ── Mega mode: detect on first tick and complete in one step ──────────
-    from article_gen import ARTICLE_MODE, build_wp_article_mega
-    req_mode = (item.get("articleMode") or "").strip().lower() if isinstance(item, dict) else ""
-    effective_mode = req_mode or ARTICLE_MODE
-    if effective_mode == "mega" and state["phase"] == "outline":
-        state["phase"] = "mega"
-        _state_save(op_id, state)
-
-    if state["phase"] == "mega":
-        _progress(op_id, "mega", 0, 1)
-        data = build_wp_article_mega(meta, target_words)
-        data = normalize_tags(data, meta)
-        try:
-            names = data.get("tags") or []
-            slugs_list = data.get("tagSlugs") or []
-            if names and slugs_list and not data.get("wpTagIds"):
-                api_base = os.environ.get("WP_API_BASE")
-                if api_base:
-                    data["wpTagIds"] = ensure_wp_tag_ids(
-                        api_base, os.getenv("WP_TOKEN", ""),
-                        names=names, slugs=slugs_list,
-                    )
-                else:
-                    data["wpTagIds"] = []
-        except Exception as _e:
-            logging.warning(f"[wpTagIds] mega mode failed: {_e}")
-            data["wpTagIds"] = data.get("wpTagIds") or []
-        if "wpTagIds" not in data or data["wpTagIds"] is None:
-            data["wpTagIds"] = []
-
-        bc = _blob_client(op_id)
-        bc.upload_blob(
-            json.dumps(data, ensure_ascii=False).encode("utf-8"),
-            overwrite=True,
-        )
-        sas = _make_sas_url(op_id)
-        _status_upsert(op_id, "done",
-            blobPath=f"{RESULT_CONTAINER}/{op_id}.json",
-            blobUrl=sas or "",
-        )
-        try:
-            _work_blob_client(op_id).delete_blob()
-        except Exception:
-            pass
-        state["phase"] = "done"
-        _state_save(op_id, state)
-        return state
-
-    # ── Multi mode (original flow) ────────────────────────────────────────
+    target_words = int(raw_target * 1.75)  # GPT produces ~55-70% of requested; inflate
 
     if state["phase"] == "outline":
         outline = generate_draft_outline(meta, target_words)
@@ -445,7 +395,9 @@ def _tick_once(op_id: str) -> dict:
         if i < total:
             per_sec = calculate_section_words(target_words, total)
             h3_title = h3[i]
-            html = generate_section_html_with_validation(meta, h3_title, per_sec)
+            # Pass previous section titles so GPT avoids repetition
+            prev_sections = [s["h3"] for s in state.get("sections", [])]
+            html = generate_section_html_with_validation(meta, h3_title, per_sec, previous_sections=prev_sections)
 
             words_now = count_words_from_html(html)
             need = int(per_sec * 0.95) - words_now
@@ -750,32 +702,6 @@ def wp_job_status(req: func.HttpRequest) -> func.HttpResponse:
     return ok(opId=op_id, status=e.get("status"), updatedUtc=e.get("updatedUtc"), info=info)
 
 
-@app.function_name(name="wp_job_tick")
-@app.route(
-    route="wp-job-tick/{opId}",
-    methods=["POST"],
-    auth_level=func.AuthLevel.FUNCTION,
-)
-def wp_job_tick(req: func.HttpRequest) -> func.HttpResponse:
-    """Advance one step of the async article generation job."""
-    op_id = req.route_params.get("opId")
-    e = _status_get(op_id)
-    if not e:
-        return bad(404, error="not_found")
-
-    if (e.get("status") or "") not in {"done", "failed"}:
-        try:
-            _tick_once(op_id)
-            e = _status_get(op_id)
-        except Exception as ex:
-            logging.exception("tick_once failed")
-            _status_upsert(op_id, "failed", error=str(ex)[:500])
-            e = _status_get(op_id)
-
-    info = {k: e.get(k) for k in ("error", "blobPath", "blobUrl", "phase", "progress")}
-    return ok(opId=op_id, status=e.get("status"), updatedUtc=e.get("updatedUtc"), info=info)
-
-
 # =============================================================================
 # KSJ: SEO image meta helpers
 # =============================================================================
@@ -794,28 +720,28 @@ def _ksj_slug(s: str) -> str:
     s = s.lower().strip()
     mapping = str.maketrans(
         {
-            "\u0101": "a",  # ā
-            "\u010D": "c",  # č
-            "\u0113": "e",  # ē
-            "\u0123": "g",  # ģ
-            "\u012B": "i",  # ī
-            "\u0137": "k",  # ķ
-            "\u013C": "l",  # ļ
-            "\u0146": "n",  # ņ
-            "\u0161": "s",  # š
-            "\u016B": "u",  # ū
-            "\u017E": "z",  # ž
-            "\u0100": "a",  # Ā
-            "\u010C": "c",  # Č
-            "\u0112": "e",  # Ē
-            "\u0122": "g",  # Ģ
-            "\u012A": "i",  # Ī
-            "\u0136": "k",  # Ķ
-            "\u013B": "l",  # Ļ
-            "\u0145": "n",  # Ņ
-            "\u0160": "s",  # Š
-            "\u016A": "u",  # Ū
-            "\u017D": "z",  # Ž
+            "Ä": "a",
+            "Ä": "c",
+            "Ä“": "e",
+            "Ä£": "g",
+            "Ä«": "i",
+            "Ä·": "k",
+            "Ä¼": "l",
+            "Å†": "n",
+            "Å¡": "s",
+            "Å«": "u",
+            "Å¾": "z",
+            "Ä€": "a",
+            "ÄŒ": "c",
+            "Ä’": "e",
+            "Ä¢": "g",
+            "Äª": "i",
+            "Ä¶": "k",
+            "Ä»": "l",
+            "Å…": "n",
+            "Å ": "s",
+            "Åª": "u",
+            "Å½": "z",
         }
     )
     s = s.translate(mapping)
@@ -823,6 +749,7 @@ def _ksj_slug(s: str) -> str:
     s = re.sub(r"[^a-z0-9\-]+", "-", s)
     s = re.sub(r"-{2,}", "-", s).strip("-")
     return s or "attels"
+
 
 def _ksj_trunc(s: str, n: int) -> str:
     s = _ksj_norm(s)
@@ -835,17 +762,9 @@ def ksj_build_image_meta(ctx: dict, prompt_used: str, ext: str = ".png") -> dict
         words = re.split(r"[,\.\s]+", _ksj_norm(prompt_used))
         title = " ".join(words[:10]) if words else "Datu sinhronizÄcija"
 
-    # Use focusKeyword or primary as the SEO keyword for alt text
-    focus_kw = (
-        _ksj_norm(ctx.get("focusKeyword") or "")
-        or _ksj_norm(ctx.get("primary") or "")
-        or KSJ_KEYWORD
-    )
-
-    # Alt text: prioritize focus keyword presence
     alt = title
-    if focus_kw.lower() not in alt.lower():
-        alt = f"{focus_kw} - {title}"
+    if KSJ_KEYWORD.lower() not in alt.lower():
+        alt = f"{alt} â€” {KSJ_KEYWORD}"
     alt = _ksj_trunc(alt, 120)
 
     caption = title
@@ -1076,51 +995,4 @@ def whoami_images(req: func.HttpRequest) -> func.HttpResponse:
         has_AZURE_TEXT=bool(
             os.getenv("AZURE_OPENAI_ENDPOINT") and os.getenv("AZURE_OPENAI_API_KEY")
         ),
-    )
-# =============================================================================
-# HTTP: Monthly content plan generator
-# =============================================================================
-@app.function_name(name="generate_content_plan")
-@app.route(
-    route="generate-content-plan",
-    methods=["POST"],
-    auth_level=func.AuthLevel.FUNCTION,
-)
-def generate_content_plan_endpoint(req: func.HttpRequest) -> func.HttpResponse:
-    incoming = read_incoming(req)
-    if not incoming:
-        incoming = {}
-
-    target_month = (incoming.get("targetMonth") or "").strip() or None
-    existing_titles = incoming.get("existingTitles") or {}
-    categories = incoming.get("categories") or None
-    try:
-        articles_per_day = int(incoming.get("articlesPerDay", 1))
-    except Exception:
-        articles_per_day = 1
-# Accept flat array from Power Automate and group by category
-    existing_items = incoming.get("existingItems") or []
-    if existing_items and not existing_titles:
-        existing_titles = {}
-        for item in existing_items:
-            cat = (item.get("WpCategory") or item.get("wpCategory") or "").strip()
-            title = (item.get("Title") or item.get("title") or "").strip()
-            if cat and title:
-                existing_titles.setdefault(cat, []).append(title)
-                
-    try:
-        result = generate_content_plan(
-            target_month=target_month,
-            existing_titles=existing_titles,
-            categories=categories,
-            articles_per_day=articles_per_day,
-        )
-    except Exception as e:
-        logging.exception("generate_content_plan failed")
-        return bad(500, error="plan_generation_failed", message=str(e)[:500])
-
-    return func.HttpResponse(
-        json.dumps(result, ensure_ascii=False),
-        status_code=200,
-        mimetype="application/json",
     )
