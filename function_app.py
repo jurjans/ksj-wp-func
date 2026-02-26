@@ -41,37 +41,15 @@ from docx_html import convert_docx_to_html
 # Raksta Ä£enerÄ“Å¡anas helpers (iznesti uz atseviÅ¡Ä·u moduÄ¼i)
 # =============================================================================
 from article_gen import (
-    # meta helpers
-    pick_item,
-    extract_meta,
-    # core builder
     build_wp_article_from_item,
-    # section helpers used by async worker
-    generate_draft_outline,
-    generate_section_html_with_validation,
-    topup_section_html,
-    refine_full_article,
-    normalize_tags,
-    ensure_wp_tag_ids,
-    count_words_from_html,
-    has_blockquote,
-    calculate_section_words,
-    needs_aggressive_topup,
-    quality_issues,
-    # NEW: keyword extractor
     generate_keywords_from_input,
-    # HTML helpers reused by worker & FB copy
-    slugify,
-    sanitize_html,
-    normalize_lv_headings,
-    # LLM HTTP helpers reused by image + FB copy
     is_azure_openai,
     get_url,
     get_headers,
     http_post_json,
-    # chat_json for FB copy
-    chat_json,
 )
+
+from article_worker import tick_once
 
 # =============================================================================
 # Azure Functions App
@@ -349,199 +327,6 @@ def ok(**payload) -> func.HttpResponse:
 
 from fb_gen import generate_fb_copy
 
-# =============================================================================
-# Async worker core ("tick" model for long article generation)
-# =============================================================================
-def _compose_content(intro_html: str, sections: list[dict]) -> str:
-    parts = [intro_html.strip()] if intro_html else []
-    for s in sections:
-        parts.append(f"<h3>{s['h3']}</h3>\n{s['html']}")
-    return sanitize_html(normalize_lv_headings("\n\n".join(parts)))
-
-
-def _tick_once(op_id: str) -> dict:
-    """
-    Execute one incremental step of the long-running article generation job.
-    State is persisted in WORK_CONTAINER and status in JobStatus table.
-    """
-    state = _state_load(op_id)
-    if not state:
-        raise RuntimeError("Job state missing")
-
-    _status_upsert(op_id, "working", phase=state["phase"])
-
-    item = state["item"]
-    meta = state.get("meta") or extract_meta(pick_item(item))
-    state["meta"] = meta
-    raw_target = int(state.get("targetWords", 5000))
-    target_words = int(raw_target * 1.75)  # GPT produces ~55-70% of requested; inflate
-
-    if state["phase"] == "outline":
-        outline = generate_draft_outline(meta, target_words)
-        state["outline"] = outline
-        state["h3"] = [
-            h.strip() for h in outline.get("h3", []) if isinstance(h, str) and h.strip()
-        ]
-        state["introHtml"] = outline.get("introHtml") or "<h2>Ievads</h2><p>-</p>"
-        state["phase"] = "sections"
-        _progress(op_id, "sections", 0, len(state["h3"]))
-        _state_save(op_id, state)
-        return state
-
-    if state["phase"] == "sections":
-        h3 = state["h3"]
-        i = int(state.get("sectionIndex", 0))
-        total = len(h3)
-        if i < total:
-            per_sec = calculate_section_words(target_words, total)
-            h3_title = h3[i]
-            # Pass previous section titles so GPT avoids repetition
-            prev_sections = [s["h3"] for s in state.get("sections", [])]
-            html = generate_section_html_with_validation(meta, h3_title, per_sec, previous_sections=prev_sections)
-
-            words_now = count_words_from_html(html)
-            need = int(per_sec * 0.95) - words_now
-            if need > 60:
-                try:
-                    html_extra = topup_section_html(meta, h3_title, need)
-                    html = (html.strip() + "\n\n" + html_extra.strip()).strip()
-                except Exception:
-                    pass
-
-            state["sections"].append({"h3": h3_title, "html": html})
-            state["sectionIndex"] = i + 1
-            _progress(op_id, "sections", i + 1, total)
-            if (i + 1) < total:
-                _state_save(op_id, state)
-                return state
-
-        state["phase"] = "finalize"
-        _state_save(op_id, state)
-        return state
-
-    if state["phase"] == "finalize":
-        outline = state.get("outline") or {}
-        title = outline.get("title") or (
-            meta.get("titleHint") or "SharePoint risinÄjumi praksÄ“"
-        )
-        seo_slug = slugify(
-            outline.get("seoSlug") or meta.get("seoSlugHint") or title
-        )
-        excerpt = outline.get("excerpt", "")
-        category = outline.get("category") or meta.get("wpCategory") or "SharePoint"
-        tags = outline.get("tags") or []
-        tag_slugs = outline.get("tagSlugs") or [slugify(t) for t in tags]
-
-        content_html = _compose_content(
-            state.get("introHtml", ""),
-            state.get("sections", []),
-        )
-
-        total_words_now = count_words_from_html(content_html)
-        if total_words_now < int(target_words * 0.85):
-            filler_target = max(500, target_words - total_words_now + 300)
-            filler_h3 = "Papildu praktiskie scenÄriji un BUJ"
-            try:
-                filler_html = generate_section_html_with_validation(
-                    meta,
-                    f"{filler_h3}: ScenÄrijs A, ScenÄrijs B, BUJ (riski, droÅ¡Ä«ba, uzturÄ“Å¡ana)",
-                    filler_target,
-                )
-                content_html = (
-                    content_html
-                    + "\n\n"
-                    + f"<h3>{filler_h3}</h3>\n{filler_html}"
-                )
-            except Exception:
-                pass
-
-        data = refine_full_article(
-            meta=meta,
-            title=title,
-            seo_slug=seo_slug,
-            excerpt=excerpt,
-            category=category,
-            tags=tags,
-            tag_slugs=tag_slugs,
-            content_html=content_html,
-            target_words=target_words,
-        )
-
-        for _ in range(1):
-            issues = quality_issues(data, target_words)
-            if not issues:
-                break
-            data = refine_full_article(
-                meta=meta,
-                title=data.get("title") or title,
-                seo_slug=data.get("seoSlug") or seo_slug,
-                excerpt=data.get("excerpt") or excerpt,
-                category=data.get("category") or category,
-                tags=data.get("tags") or tags,
-                tag_slugs=data.get("tagSlugs") or tag_slugs,
-                content_html=data.get("contentHtml") or content_html,
-                target_words=target_words,
-            )
-
-        try:
-            if data.get("tags") and data.get("tagSlugs") and not data.get("wpTagIds"):
-                api_base = os.environ.get("WP_API_BASE")
-                if api_base:
-                    token = os.getenv("WP_TOKEN", "")
-                    data["wpTagIds"] = ensure_wp_tag_ids(
-                        api_base,
-                        token,
-                        names=data["tags"],
-                        slugs=data["tagSlugs"],
-                    )
-                else:
-                    data["wpTagIds"] = []
-        except Exception as _e:
-            logging.warning(f"[wpTagIds] finalize failed: {_e}")
-            data["wpTagIds"] = data.get("wpTagIds") or []
-
-        logging.info(
-            "[finalize] tags=%s slugs=%s wpTagIds=%s api_base=%s",
-            data.get("tags"),
-            data.get("tagSlugs"),
-            data.get("wpTagIds"),
-            os.environ.get("WP_API_BASE"),
-        )
-        _status_upsert(
-            op_id,
-            "working",
-            phase="finalize",
-            wpTagIdsCount=len(data.get("wpTagIds") or []),
-        )
-
-        if "wpTagIds" not in data or data["wpTagIds"] is None:
-            data["wpTagIds"] = []
-
-        bc = _blob_client(op_id)
-        bc.upload_blob(
-            json.dumps(data, ensure_ascii=False).encode("utf-8"),
-            overwrite=True,
-        )
-        blob_path = f"{RESULT_CONTAINER}/{op_id}.json"
-        sas = _make_sas_url(op_id)
-        _status_upsert(
-            op_id,
-            "done",
-            blobPath=blob_path,
-            blobUrl=sas or "",
-        )
-
-        try:
-            _work_blob_client(op_id).delete_blob()
-        except Exception:
-            pass
-
-        state["phase"] = "done"
-        _state_save(op_id, state)
-        return state
-
-    return state
-
 
 # =============================================================================
 # HTTP: synchronous article generator (single-call)
@@ -619,7 +404,7 @@ def KeywordExtractor(req: func.HttpRequest) -> func.HttpResponse:
 
     kw = None
     if isinstance(out, dict):
-        kw = out.get("top_recommendation") or (out.get("candidates")[0]["phrase"] if out.get("candidates") else None)
+        kw = out.get("top_recommendation") or (out.get("candidates", [])[0].get("phrase") if out.get("candidates") else None)
 
     if not kw:
         return func.HttpResponse(status_code=204)
@@ -691,7 +476,7 @@ def wp_job_status(req: func.HttpRequest) -> func.HttpResponse:
 
     if (e.get("status") or "") not in {"done", "failed"}:
         try:
-            _tick_once(op_id)
+            tick_once(op_id)
             e = _status_get(op_id)
         except Exception as ex:
             logging.exception("tick_once failed")
@@ -949,8 +734,11 @@ def generate_image(req: func.HttpRequest) -> func.HttpResponse:
             img.save(buf, format="PNG")
             b64 = b64encode(buf.getvalue()).decode("ascii")
             w, h = target_w, target_h
-        except Exception:
-            pass
+        except Exception as _resize_err:
+            logging.warning(
+                "Image resize failed — fit_mode=%s source_b64_len=%d original_size=%dx%d: %s",
+                fit_mode, len(b64), w, h, _resize_err,
+            )
 
         return ok(
             imageBase64=b64,

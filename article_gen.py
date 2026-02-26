@@ -116,9 +116,26 @@ def serp_search_cached(q: str, ttl: int = DEFAULT_TTL, max_per_minute: int = 30)
                 redis_set(cache_key, j, ttl)
                 redis_incr_month(1)
                 return j
+            if r.status_code == 401:
+                logging.error(
+                    "serp_search_cached: authentication failure (401) — check SERPAPI_KEY. query=%r",
+                    q,
+                )
+                return {}
+            if r.status_code == 403:
+                logging.warning(
+                    "serp_search_cached: access forbidden (403) — plan limit or IP restriction. "
+                    "query=%r response=%s",
+                    q, r.text[:200],
+                )
+                return {}
             if r.status_code in (429, 500, 502, 503, 504):
                 time.sleep(wait)
                 continue
+            logging.warning(
+                "serp_search_cached: unexpected HTTP %d for query=%r — %s",
+                r.status_code, q, r.text[:200],
+            )
             break
         except requests.RequestException:
             time.sleep(wait)
@@ -175,10 +192,14 @@ def slugify(text: str) -> str:
 # ==== LLM HTTP helperi =======================================================
 
 import ssl
+import urllib.error
 import urllib.request
 
 
 LLM_HTTP_TIMEOUT = int(os.getenv("LLM_HTTP_TIMEOUT", "1500"))
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
+LLM_RETRY_BASE_DELAY = float(os.getenv("LLM_RETRY_BASE_DELAY", "1.0"))
+_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 def is_azure_openai() -> bool:
@@ -203,21 +224,94 @@ def get_headers() -> dict:
 
 
 def http_post_json(url: str, headers: dict, body: dict, timeout_sec: int = LLM_HTTP_TIMEOUT) -> dict:
-    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+    req_body = json.dumps(body).encode("utf-8")
     ctx = ssl.create_default_context()
-    with urllib.request.urlopen(req, context=ctx, timeout=timeout_sec) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    last_exc: Exception = RuntimeError("http_post_json: no attempts made")
+
+    for attempt in range(LLM_MAX_RETRIES + 1):
+        try:
+            req = urllib.request.Request(url, data=req_body, headers=headers, method="POST")
+            with urllib.request.urlopen(req, context=ctx, timeout=timeout_sec) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+
+        except urllib.error.HTTPError as e:
+            status = e.code
+            try:
+                body_text = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                body_text = "(unreadable)"
+
+            if status not in _TRANSIENT_STATUS_CODES:
+                raise RuntimeError(
+                    f"LLM API HTTP {status} (non-retryable): {body_text[:400]}"
+                ) from e
+
+            last_exc = RuntimeError(f"LLM API HTTP {status}: {body_text[:200]}")
+            if attempt >= LLM_MAX_RETRIES:
+                break
+
+            try:
+                delay = float(e.headers.get("Retry-After") or 0)
+            except Exception:
+                delay = 0.0
+            if not (delay > 0):
+                delay = LLM_RETRY_BASE_DELAY * (2 ** attempt)
+
+            logging.warning(
+                "http_post_json: HTTP %s on attempt %d/%d, retrying in %.1fs — %s",
+                status, attempt + 1, LLM_MAX_RETRIES + 1, delay, body_text[:200],
+            )
+            time.sleep(delay)
+
+        except urllib.error.URLError as e:
+            last_exc = e
+            if attempt >= LLM_MAX_RETRIES:
+                break
+
+            delay = LLM_RETRY_BASE_DELAY * (2 ** attempt)
+            logging.warning(
+                "http_post_json: network error on attempt %d/%d, retrying in %.1fs — %s",
+                attempt + 1, LLM_MAX_RETRIES + 1, delay, e,
+            )
+            time.sleep(delay)
+
+    raise RuntimeError(
+        f"http_post_json failed after {LLM_MAX_RETRIES + 1} attempt(s)"
+    ) from last_exc
 
 
 def force_json_from_text(text: str):
     t = (text or "").strip()
     if t.startswith("```"):
         t = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", t, flags=re.S)
+        t = t.strip()
+
     i, j = t.find("{"), t.rfind("}")
     if i != -1 and j != -1 and j > i:
         candidate = t[i : j + 1]
-        return json.loads(candidate)
-    return json.loads(t)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as e:
+            logging.error(
+                "force_json_from_text: extracted JSON candidate is malformed "
+                "(offset %d, line %d, col %d) — snippet: %.200r",
+                e.pos, e.lineno, e.colno, candidate,
+            )
+            raise ValueError(
+                f"Model returned malformed JSON (parse error at offset {e.pos}): {candidate[:200]!r}"
+            ) from e
+
+    try:
+        return json.loads(t)
+    except json.JSONDecodeError as e:
+        logging.error(
+            "force_json_from_text: no JSON object found in model output — "
+            "raw text snippet: %.200r",
+            t,
+        )
+        raise ValueError(
+            f"Model returned no JSON object (raw response): {t[:200]!r}"
+        ) from e
 
 
 def chat_json(payload: dict) -> dict:
@@ -565,21 +659,54 @@ def generate_draft_outline(meta: dict, target_words: int) -> dict:
         "response_format": outline_response_format(),
     }
 
-    data = chat_json(payload)
+    _MAX_ATTEMPTS = 4  # 1 initial + 3 retries
+    last_exc: Exception = RuntimeError("generate_draft_outline: no attempts made")
 
-    data["category"] = category
-    data["tags"] = []
-    data["tagSlugs"] = []
-    data["focusKeyword"] = focus_keyword
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            data = chat_json(payload)
+        except (ValueError, RuntimeError) as e:
+            last_exc = e
+            if attempt + 1 < _MAX_ATTEMPTS:
+                delay = LLM_RETRY_BASE_DELAY * (2 ** attempt)
+                logging.warning(
+                    "generate_draft_outline: attempt %d/%d failed (%s), retrying in %.1fs",
+                    attempt + 1, _MAX_ATTEMPTS, e, delay,
+                )
+                time.sleep(delay)
+            continue
 
-    data["seoSlug"] = slugify(data.get("seoSlug") or meta.get("seoSlugHint") or data.get("title"))
-    data["introHtml"] = sanitize_html(normalize_lv_headings(data.get("introHtml", "")))
+        data["category"] = category
+        data["tags"] = []
+        data["tagSlugs"] = []
+        data["focusKeyword"] = focus_keyword
+        data["seoSlug"] = slugify(data.get("seoSlug") or meta.get("seoSlugHint") or data.get("title"))
+        data["introHtml"] = sanitize_html(normalize_lv_headings(data.get("introHtml", "")))
 
-    if not isinstance(data.get("h3"), list):
-        data["h3"] = []
-    if len(data["h3"]) < 7:
-        raise RuntimeError("Outline returned too few h3 headings")
-    return data
+        if not isinstance(data.get("h3"), list):
+            data["h3"] = []
+        if len(data["h3"]) < 7:
+            last_exc = RuntimeError(
+                f"Outline returned too few h3 headings ({len(data['h3'])} < 7)"
+            )
+            if attempt + 1 < _MAX_ATTEMPTS:
+                delay = LLM_RETRY_BASE_DELAY * (2 ** attempt)
+                logging.warning(
+                    "generate_draft_outline: attempt %d/%d — %s, retrying in %.1fs",
+                    attempt + 1, _MAX_ATTEMPTS, last_exc, delay,
+                )
+                time.sleep(delay)
+            continue
+
+        return data
+
+    logging.error(
+        "generate_draft_outline: all %d attempts failed — %s",
+        _MAX_ATTEMPTS, last_exc,
+    )
+    raise RuntimeError(
+        f"generate_draft_outline failed after {_MAX_ATTEMPTS} attempt(s): {last_exc}"
+    ) from last_exc
 
 
 def section_response_format(min_len: int = 1200) -> dict:
@@ -749,7 +876,17 @@ def refine_full_article(
 
     try:
         data = chat_json(payload)
-    except Exception:
+    except ValueError as e:
+        logging.warning(
+            "refine_full_article: model returned unparseable JSON, falling back to pre-refinement content — %s",
+            e,
+        )
+        data = pre
+    except RuntimeError as e:
+        logging.warning(
+            "refine_full_article: LLM call failed, falling back to pre-refinement content — %s",
+            e,
+        )
         data = pre
 
     data["seoSlug"] = slugify(data.get("seoSlug") or seo_slug or title)
@@ -827,6 +964,11 @@ def normalize_tags(data: dict, meta: dict) -> dict:
 import requests
 
 
+_WP_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
+_WP_MAX_RETRIES = int(os.getenv("WP_MAX_RETRIES", "3"))
+_WP_RETRY_BASE_DELAY = float(os.getenv("WP_RETRY_BASE_DELAY", "1.0"))
+
+
 def _wp_auth_headers() -> dict:
     import base64
 
@@ -834,39 +976,119 @@ def _wp_auth_headers() -> dict:
     if scheme == "basic":
         b64 = os.getenv("WP_BASIC_AUTH_B64")
         if not b64:
-            user = os.environ["WP_USER"]
-            app_pw = os.environ["WP_APP_PASSWORD"]
+            user = os.getenv("WP_USER", "")
+            app_pw = os.getenv("WP_APP_PASSWORD", "")
+            missing = [name for name, val in (("WP_USER", user), ("WP_APP_PASSWORD", app_pw)) if not val]
+            if missing:
+                raise RuntimeError(
+                    f"WP basic-auth credentials missing: {', '.join(missing)}. "
+                    "Set WP_BASIC_AUTH_B64 or both WP_USER and WP_APP_PASSWORD."
+                )
             b64 = base64.b64encode(f"{user}:{app_pw}".encode("utf-8")).decode("utf-8")
         return {"Authorization": f"Basic {b64}", "Content-Type": "application/json"}
-    token = os.environ["WP_TOKEN"]
+    token = os.getenv("WP_TOKEN", "")
+    if not token:
+        raise RuntimeError(
+            "WP JWT token missing: set the WP_TOKEN environment variable. "
+            "To use basic auth instead, set WP_AUTH_SCHEME=basic."
+        )
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+def _wp_call(method: str, url: str, *, headers: dict, timeout: int = 15, **kwargs) -> requests.Response:
+    """
+    Execute a WP REST API request with exponential backoff for transient failures
+    (429, 500, 502, 503, 504). Always returns the Response object — the caller decides
+    what to do with non-ok responses. Raises RuntimeError only when a network-level
+    error persists across all retries.
+    """
+    last_exc: Exception = RuntimeError("_wp_call: no attempts made")
+
+    for attempt in range(_WP_MAX_RETRIES + 1):
+        try:
+            r = requests.request(method, url, headers=headers, timeout=timeout, **kwargs)
+        except requests.exceptions.RequestException as e:
+            last_exc = e
+            if attempt >= _WP_MAX_RETRIES:
+                break
+            delay = _WP_RETRY_BASE_DELAY * (2 ** attempt)
+            logging.warning(
+                "_wp_call: network error on attempt %d/%d, retrying in %.1fs — %s",
+                attempt + 1, _WP_MAX_RETRIES + 1, delay, e,
+            )
+            time.sleep(delay)
+            continue
+
+        if r.status_code not in _WP_TRANSIENT_STATUS_CODES:
+            return r  # 2xx success or non-retryable error — caller handles it
+
+        # Transient: log and retry
+        last_exc = RuntimeError(f"WP API HTTP {r.status_code}")
+        if attempt >= _WP_MAX_RETRIES:
+            return r  # Exhausted — return final response for caller to log and raise
+
+        try:
+            delay = float(r.headers.get("Retry-After") or 0)
+        except Exception:
+            delay = 0.0
+        if not (delay > 0):
+            delay = _WP_RETRY_BASE_DELAY * (2 ** attempt)
+
+        logging.warning(
+            "_wp_call: HTTP %s on attempt %d/%d, retrying in %.1fs — %s %s",
+            r.status_code, attempt + 1, _WP_MAX_RETRIES + 1, delay, method, url,
+        )
+        time.sleep(delay)
+
+    raise RuntimeError(
+        f"_wp_call: network failure after {_WP_MAX_RETRIES + 1} attempt(s)"
+    ) from last_exc
 
 
 def create_or_get_wp_tag(api_base: str, *, name: str, slug: str) -> int:
     headers = _wp_auth_headers()
-    r = requests.get(f"{api_base}/wp/v2/tags", params={"slug": slug}, headers=headers, timeout=15)
-    r.raise_for_status()
+
+    # 1. Look up existing tag by slug
+    r = _wp_call("GET", f"{api_base}/wp/v2/tags", headers=headers, params={"slug": slug})
+    if not r.ok:
+        raise RuntimeError(
+            f"WP tag GET failed: HTTP {r.status_code} — {r.text[:400]}"
+        )
     arr = r.json()
     if arr:
         tag = arr[0]
         if tag.get("name") != name:
-            try:
-                requests.post(f"{api_base}/wp/v2/tags/{tag['id']}", json={"name": name}, headers=headers, timeout=15)
-            except Exception:
-                pass
+            r_upd = _wp_call(
+                "POST", f"{api_base}/wp/v2/tags/{tag['id']}",
+                headers=headers, json={"name": name},
+            )
+            if not r_upd.ok:
+                logging.warning(
+                    "create_or_get_wp_tag: name update for tag %d ('%s' → '%s') "
+                    "failed HTTP %s — %s",
+                    tag["id"], tag.get("name"), name, r_upd.status_code, r_upd.text[:200],
+                )
         return tag["id"]
 
-    r = requests.post(f"{api_base}/wp/v2/tags", json={"name": name, "slug": slug}, headers=headers, timeout=15)
+    # 2. Create new tag
+    r = _wp_call("POST", f"{api_base}/wp/v2/tags", headers=headers, json={"name": name, "slug": slug})
     if r.ok:
         return r.json()["id"]
 
+    # Handle race condition: tag was created between our GET and POST
     try:
         err = r.json()
         if err.get("code") == "term_exists":
-            return err["data"]["term_id"]
+            term_id = err["data"]["term_id"]
+            logging.info(
+                "create_or_get_wp_tag: '%s' (%s) already existed (race condition), term_id=%d",
+                name, slug, term_id,
+            )
+            return term_id
     except Exception:
         pass
-    raise RuntimeError(f"WP tag create failed: {r.status_code} {r.text}")
+
+    raise RuntimeError(f"WP tag create failed: HTTP {r.status_code} — {r.text[:400]}")
 
 
 def ensure_wp_tag_ids(api_base: str, token: str, *, names: list[str], slugs: list[str]) -> list[int]:
@@ -1413,8 +1635,16 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
             # Fallback: single section returned
             raw_sections = [{"h3": batch_h3[0], "html": batch_data["sectionHtml"]}]
 
+        if len(raw_sections) > len(batch_h3):
+            logging.warning(
+                "[mega] batch %d: model returned %d sections but %d were requested — "
+                "stripping %d hallucinated extra section(s)",
+                batch_num, len(raw_sections), len(batch_h3), len(raw_sections) - len(batch_h3),
+            )
+            raw_sections = raw_sections[: len(batch_h3)]
+
         for idx, sec in enumerate(raw_sections):
-            h3 = sec.get("h3") or (batch_h3[idx] if idx < len(batch_h3) else f"Sadaļa {batch_start + idx + 1}")
+            h3 = sec.get("h3") or batch_h3[idx]
             html = sec.get("html") or sec.get("sectionHtml") or ""
             if html.strip():
                 all_sections.append({"h3": h3, "html": html})
@@ -2511,17 +2741,17 @@ def generate_keywords_from_input(input_obj: dict, limit: int = 10, use_llm: bool
     if not top_choice:
         best = None
         for c in candidates:
-            phrase = c["phrase"]
+            phrase = c.get("phrase", "")
             rel = c.get("predicted_relevance", 0.0)
             trend = enrichment.get(phrase, {}).get("trend", 0.0)
             serp_score = 1.0 if enrichment.get(phrase, {}).get("organic_count", 0) > 0 else 0.5
             final_score = 0.6 * rel + 0.25 * trend + 0.15 * serp_score
             c["_final_score"] = round(final_score, 3)
-            if not best or final_score > best["_final_score"]:
+            if not best or final_score > best.get("_final_score", 0.0):
                 best = c
         if best:
-            top_choice = {"keyword": best["phrase"], "score": best.get("_final_score", best.get("predicted_relevance", 0.0)), "explanation": "local heuristic + enrichment"}
+            top_choice = {"keyword": best.get("phrase", ""), "score": best.get("_final_score", best.get("predicted_relevance", 0.0)), "explanation": "local heuristic + enrichment"}
         else:
             top_choice = None
 
-    return {"top_recommendation": (top_choice["keyword"] if top_choice else None), "candidates": candidates[:limit]}
+    return {"top_recommendation": (top_choice.get("keyword") if top_choice else None), "candidates": candidates[:limit]}

@@ -7,6 +7,7 @@ provider detection based on environment variables.
 
 import datetime
 import io
+import logging
 import re
 import unicodedata
 import urllib.error
@@ -319,8 +320,11 @@ def generate_image_b64(
     # Resize to social header
     try:
         b64, w, h = fit_to_social_header(b64, fit_mode)
-    except Exception:
-        pass  # return original if resize fails
+    except Exception as _resize_err:
+        logging.warning(
+            "fit_to_social_header failed — provider=%s fit_mode=%s original_size=%dx%d: %s",
+            provider, fit_mode, w, h, _resize_err,
+        )
 
     return {
         "imageBase64": b64,
