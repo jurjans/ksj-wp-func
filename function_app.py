@@ -192,6 +192,11 @@ def _progress(op_id: str, phase: str, done: int, total: int, **extra):
 @app.function_name(name="ping")
 @app.route(route="ping", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def ping(req: func.HttpRequest) -> func.HttpResponse:
+    """GET /api/ping — anonymous healthcheck endpoint.
+
+    Returns:
+        HTTP 200 with plain-text body "pong".
+    """
     return func.HttpResponse("pong", status_code=200)
 
 
@@ -264,6 +269,15 @@ def get_images_headers() -> dict:
 
 
 def coerce_size(w: int, h: int) -> tuple[int, int]:
+    """Snap requested dimensions to the nearest allowed DALL-E image size.
+
+    Args:
+        w: Requested width in pixels.
+        h: Requested height in pixels.
+
+    Returns:
+        Tuple (width, height) from the allowed set {1024x1024, 1536x1024, 1024x1536}.
+    """
     allowed = {(1024, 1024), (1536, 1024), (1024, 1536)}
     if (w, h) in allowed:
         return w, h
@@ -310,6 +324,15 @@ def read_incoming(req: func.HttpRequest):
 
 
 def bad(code: int, **payload) -> func.HttpResponse:
+    """Return a JSON error response with the given HTTP status code.
+
+    Args:
+        code: HTTP status code (e.g. 400, 404, 500, 502).
+        **payload: Additional key-value pairs serialized as the JSON body.
+
+    Returns:
+        HttpResponse with application/json content type.
+    """
     return func.HttpResponse(
         json.dumps(payload, ensure_ascii=False),
         status_code=code,
@@ -318,6 +341,14 @@ def bad(code: int, **payload) -> func.HttpResponse:
 
 
 def ok(**payload) -> func.HttpResponse:
+    """Return a JSON 200 OK response.
+
+    Args:
+        **payload: Key-value pairs serialized as the JSON body.
+
+    Returns:
+        HttpResponse with status 200 and application/json content type.
+    """
     return func.HttpResponse(
         json.dumps(payload, ensure_ascii=False),
         status_code=200,
@@ -337,6 +368,16 @@ from fb_gen import generate_fb_copy
     auth_level=func.AuthLevel.FUNCTION,
 )
 def generate_wp_article(req: func.HttpRequest) -> func.HttpResponse:
+    """POST /api/generate-wp-article — synchronous single-call article generator.
+
+    Body: JSON with article metadata fields (primary, angle, audience, wpCategory,
+          targetWords, articleMode, etc.; see build_wp_article_from_item).
+
+    Returns:
+        HTTP 200 JSON with full article data: title, seoSlug, excerpt, contentHtml,
+        category, tags, tagSlugs, focusKeyword, wpTagIds.
+        HTTP 400 on missing/invalid body or generation failure.
+    """
     incoming = read_incoming(req)
     if not incoming:
         return bad(400, error="Invalid JSON body")
@@ -356,6 +397,16 @@ def generate_wp_article(req: func.HttpRequest) -> func.HttpResponse:
     auth_level=func.AuthLevel.FUNCTION,
 )
 def generate_fb_copy_route(req: func.HttpRequest) -> func.HttpResponse:
+    """POST /api/generate-fb-copy — Facebook post copy generator.
+
+    Body: JSON with article metadata fields (primary, angle, audience, wpLink,
+          bookLink, style, tagsCsv, SeoSlug, etc.).
+
+    Returns:
+        HTTP 200 JSON with keys: message, hashtags, wpLink, cta.
+        HTTP 400 on missing/invalid body.
+        HTTP 500 on generation failure.
+    """
     incoming = read_incoming(req)
     if not incoming:
         return bad(400, error="Invalid JSON body")
@@ -437,6 +488,18 @@ def KeywordExtractor(req: func.HttpRequest) -> func.HttpResponse:
     auth_level=func.AuthLevel.FUNCTION,
 )
 def enqueue_wp_article(req: func.HttpRequest) -> func.HttpResponse:
+    """POST /api/enqueue-wp-article — enqueue an async article generation job.
+
+    Initialises job state in Blob Storage and status in Table Storage, then
+    returns immediately so the caller can poll using wp-job-tick.
+
+    Body: JSON with article metadata fields (same as generate-wp-article),
+          plus optional targetWords.
+
+    Returns:
+        HTTP 202 JSON with keys: opId, statusUrl, resultUrl, resultBlobSas.
+        HTTP 400 on missing/invalid body.
+    """
     incoming = read_incoming(req)
     if not incoming:
         return bad(400, error="Invalid JSON body")
@@ -576,6 +639,16 @@ def _ksj_trunc(s: str, n: int) -> str:
 
 
 def ksj_build_image_meta(ctx: dict, prompt_used: str, ext: str = ".png") -> dict:
+    """Build SEO-optimised image metadata (alt text, caption, description, filename).
+
+    Args:
+        ctx: Context dict with optional title key.
+        prompt_used: Image generation prompt; used to derive a title when ctx lacks one.
+        ext: File extension for the generated filename (default ".png").
+
+    Returns:
+        Dict with keys: alt_text, caption, description, file_name.
+    """
     title = _ksj_norm((ctx.get("title") or ""))
     if not title:
         words = re.split(r"[,\.\s]+", _ksj_norm(prompt_used))
@@ -604,6 +677,18 @@ def ksj_build_image_meta(ctx: dict, prompt_used: str, ext: str = ".png") -> dict
 # Image generator endpoint
 # =============================================================================
 def synthesize_image_prompt(ctx: dict, style_hint: str) -> str:
+    """Use the LLM to generate a single-line image prompt from article context.
+
+    Args:
+        ctx: Context dict with optional keys: title, primary, angle, audience.
+        style_hint: Visual style directive appended to the user message.
+
+    Returns:
+        Single-line image prompt string.
+
+    Raises:
+        RuntimeError: When the LLM returns empty content.
+    """
     system = (
         "You write a single high-quality image prompt for Azure OpenAI Images (DALLÂ·E 3 / gpt-image). "
         "Constraints: 1200x630 social header, modern, clean, metaphorical visual. "
@@ -655,6 +740,25 @@ def synthesize_image_prompt(ctx: dict, style_hint: str) -> str:
     auth_level=func.AuthLevel.FUNCTION,
 )
 def generate_image(req: func.HttpRequest) -> func.HttpResponse:
+    """POST /api/generate-image — AI image generation endpoint.
+
+    Calls the configured image provider (OpenAI gpt-image-1 or Azure DALL-E),
+    resizes the result to 1200x630, and returns base64-encoded PNG with SEO metadata.
+
+    Body JSON fields:
+        prompt: Optional explicit image prompt (synthesized from context if absent).
+        style: Optional style hint passed to prompt synthesis.
+        aspect: Requested dimensions as "WIDTHxHEIGHT" (default "1200x630").
+        correlationId: Optional caller-provided correlation identifier.
+        context: Optional dict with title, primary, angle, audience for prompt synthesis.
+        fitMode: "cover", "contain", or "auto" (default "auto").
+
+    Returns:
+        HTTP 200 JSON with keys: imageBase64, ext, width, height, correlationId,
+        promptUsed, provider, altText, caption, description, fileName, imagesUrl.
+        HTTP 400 on invalid aspect value.
+        HTTP 502 on image API errors.
+    """
     incoming = read_incoming(req)
     if not incoming:
         return bad(400, error="Invalid JSON body")
@@ -802,6 +906,12 @@ def generate_image(req: func.HttpRequest) -> func.HttpResponse:
     auth_level=func.AuthLevel.FUNCTION,
 )
 def whoami_images(req: func.HttpRequest) -> func.HttpResponse:
+    """GET /api/whoami-images — debug endpoint reporting the active image provider.
+
+    Returns:
+        HTTP 200 JSON with keys: provider, force, deployment, imagesUrl,
+        has_OAI_KEY, has_AZURE_TEXT.
+    """
     force = (os.getenv("FORCE_IMAGE_PROVIDER", "") or "").strip().lower()
     dep = (os.getenv("AZURE_OPENAI_IMAGE_DEPLOYMENT", "") or "").strip()
 

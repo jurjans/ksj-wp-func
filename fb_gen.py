@@ -23,6 +23,7 @@ from config import BOOK_LINK, FB_COPY_MAX_TOKENS
 # Unicode heading helpers (FB doesn't support bold, so we use math bold chars)
 # =============================================================================
 def has_lv_diacritics(s: str) -> bool:
+    """Return True when string s contains at least one Latvian diacritic character."""
     return bool(re.search(r"[āčēģīķļņšūžĀČĒĢĪĶĻŅŠŪŽ]", s))
 
 

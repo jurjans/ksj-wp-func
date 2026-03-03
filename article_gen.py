@@ -56,6 +56,7 @@ except Exception:
     _redis = None
 
 def redis_get(key: str):
+    """Retrieve a JSON-deserialized value from Redis, or None if unavailable."""
     if not _redis:
         return None
     v = _redis.get(key)
@@ -65,6 +66,7 @@ def redis_get(key: str):
         return None
 
 def redis_set(key: str, value, ttl: int = DEFAULT_TTL):
+    """Serialize value to JSON and store it in Redis with the given TTL (seconds)."""
     if not _redis:
         return
     try:
@@ -73,6 +75,7 @@ def redis_set(key: str, value, ttl: int = DEFAULT_TTL):
         return
 
 def redis_get_int(key: str):
+    """Return Redis key value as int, or 0 if the key is absent or Redis is unavailable."""
     if not _redis:
         return 0
     try:
@@ -82,6 +85,7 @@ def redis_get_int(key: str):
         return 0
 
 def redis_incr_month(count: int = 1):
+    """Increment the current-month SerpApi usage counter by count and return the new value."""
     if not _redis:
         return 0
     key = "serpapi:month:" + datetime.utcnow().strftime("%Y%m")
@@ -94,6 +98,15 @@ def redis_incr_month(count: int = 1):
     return int(val)
 
 def incr_counter(key: str, window_sec: int = 60):
+    """Atomically increment a Redis counter key and set its TTL to window_sec.
+
+    Args:
+        key: Redis key to increment.
+        window_sec: Expiry window in seconds (reset each call).
+
+    Returns:
+        New integer value of the counter, or 0 on error / no Redis.
+    """
     if not _redis:
         return 0
     try:
@@ -196,6 +209,7 @@ TAG_RE = re.compile(r"</?([a-zA-Z0-9]+)(\s+[^>]*)?>", re.IGNORECASE)
 
 
 def sanitize_html(html: str) -> str:
+    """Strip disallowed HTML tags, keeping only the ALLOWED_TAGS set."""
     html = re.sub(r"(?is)<(script|style).*?>.*?</\1>", "", html)
 
     def _repl(m: re.Match):
@@ -209,6 +223,7 @@ import unicodedata
 
 
 def slugify(text: str) -> str:
+    """Convert text to a URL-friendly ASCII slug (lowercase, hyphens, no diacritics)."""
     if not text:
         return ""
     s = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
@@ -233,10 +248,16 @@ _TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 def is_azure_openai() -> bool:
+    """Return True when both AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY are set."""
     return bool(os.getenv("AZURE_OPENAI_ENDPOINT") and os.getenv("AZURE_OPENAI_API_KEY"))
 
 
 def get_url() -> str:
+    """Build the chat-completions endpoint URL for whichever LLM provider is configured.
+
+    Returns:
+        Full URL string for the Azure OpenAI or OpenAI chat/completions endpoint.
+    """
     if is_azure_openai():
         base = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
         ver = os.getenv("AZURE_OPENAI_API_VERSION", "2024-11-20")
@@ -248,12 +269,30 @@ def get_url() -> str:
 
 
 def get_headers() -> dict:
+    """Return authentication headers for the active LLM provider (api-key for Azure, Bearer for OpenAI)."""
     if is_azure_openai():
         return {"Content-Type": "application/json", "api-key": os.getenv("AZURE_OPENAI_API_KEY", "")}
     return {"Content-Type": "application/json", "Authorization": f"Bearer {os.getenv('OAI_API_KEY','')}"}
 
 
 def http_post_json(url: str, headers: dict, body: dict, timeout_sec: int = LLM_HTTP_TIMEOUT) -> dict:
+    """POST JSON body to url and return parsed JSON response.
+
+    Retries up to LLM_MAX_RETRIES times for transient HTTP errors (429/5xx)
+    with exponential backoff, honouring Retry-After when present.
+
+    Args:
+        url: Full endpoint URL.
+        headers: HTTP request headers (including auth).
+        body: Request payload to serialize as JSON.
+        timeout_sec: Per-attempt socket timeout in seconds.
+
+    Returns:
+        Parsed JSON response dict.
+
+    Raises:
+        RuntimeError: On non-retryable HTTP errors or exhausted retries.
+    """
     req_body = json.dumps(body).encode("utf-8")
     ctx = ssl.create_default_context()
     last_exc: Exception = RuntimeError("http_post_json: no attempts made")
@@ -311,6 +350,17 @@ def http_post_json(url: str, headers: dict, body: dict, timeout_sec: int = LLM_H
 
 
 def force_json_from_text(text: str):
+    """Extract and parse a JSON object from a text string that may contain markdown fences.
+
+    Args:
+        text: Raw model output, optionally wrapped in ```json ... ``` fences.
+
+    Returns:
+        Parsed Python dict or list.
+
+    Raises:
+        ValueError: When no valid JSON object is found or parsing fails.
+    """
     t = (text or "").strip()
     if t.startswith("```"):
         t = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", t, flags=re.S)
@@ -345,6 +395,20 @@ def force_json_from_text(text: str):
 
 
 def chat_json(payload: dict) -> dict:
+    """Send a chat-completions payload and return the parsed JSON content.
+
+    Handles both Azure OpenAI response shapes and standard OpenAI choices format.
+
+    Args:
+        payload: Full request dict including messages, max_tokens, temperature, etc.
+
+    Returns:
+        Parsed dict from the model's JSON response content.
+
+    Raises:
+        RuntimeError: When the model returns empty content.
+        ValueError: When the content cannot be parsed as JSON.
+    """
     url, headers = get_url(), get_headers()
     outer = http_post_json(url, headers, payload, timeout_sec=LLM_HTTP_TIMEOUT)
     text = (
@@ -434,6 +498,17 @@ def _min_length_from_target_words(target_words: int) -> int:
 
 
 def response_format_for_model(target_words: int) -> dict:
+    """Return the OpenAI response_format object for a full WpArticle JSON schema.
+
+    Uses a strict json_schema when USE_JSON_SCHEMA is enabled, otherwise
+    falls back to the looser json_object type.
+
+    Args:
+        target_words: Target article word count; used to compute minLength for contentHtml.
+
+    Returns:
+        Dict suitable for the response_format field of a chat-completions request.
+    """
     if USE_JSON_SCHEMA:
         return {
             "type": "json_schema",
@@ -478,12 +553,14 @@ def response_format_for_model(target_words: int) -> dict:
 # =============================================================================
 
 def pick_item(payload: dict) -> dict:
+    """Return the first element of a SharePoint-style value list, or the payload itself."""
     if isinstance(payload, dict) and isinstance(payload.get("value"), list) and payload["value"]:
         return payload["value"][0]
     return payload
 
 
 def extract_meta(item: dict) -> dict:
+    """Normalize a raw SharePoint list item into the canonical article metadata dict."""
     return {
         "titleHint": item.get("Title") or item.get("{Name}"),
         "primary": item.get("Prim_x0101_r_x0101__x0020_t_x011") or item.get("primary"),
@@ -500,19 +577,23 @@ def extract_meta(item: dict) -> dict:
 
 
 def count_words_from_html(html: str) -> int:
+    """Strip HTML tags and return the whitespace-delimited word count."""
     txt = re.sub(r"<[^>]+>", " ", html or "")
     return len(re.findall(r"\S+", txt))
 
 
 def count_tag(html: str, tag: str) -> int:
+    """Count opening occurrences of a given HTML tag name in html."""
     return len(re.findall(fr"<{tag}\b", html or "", flags=re.I))
 
 
 def has_blockquote(html: str) -> bool:
+    """Return True when html contains a non-trivial <blockquote> element (12-400 chars of text)."""
     return bool(re.search(r"<blockquote>\s*[^<]{12,400}\s*</blockquote>", html or "", flags=re.I | re.S))
 
 
 def normalize_lv_headings(html: str) -> str:
+    """Replace common English heading phrases inside h2/h3 tags with Latvian equivalents."""
     if not html:
         return html
     SP = r"(?:\s|&nbsp;|\u00A0|[--—])"
@@ -554,6 +635,18 @@ def normalize_lv_headings(html: str) -> str:
 
 
 def quality_issues(data: dict, target_words: int) -> List[str]:
+    """Validate a generated article dict and return a list of human-readable issue strings.
+
+    Checks word count, heading counts, list counts, blockquote presence, ROI signals,
+    excerpt length, and focus keyword placement/density.
+
+    Args:
+        data: Article dict with keys title, seoSlug, excerpt, contentHtml, focusKeyword, etc.
+        target_words: Expected word count (±15% tolerance applied).
+
+    Returns:
+        List of issue strings; empty list means the article passes all checks.
+    """
     issues: List[str] = []
     content = data.get("contentHtml", "")
     w = count_words_from_html(content)
@@ -623,6 +716,7 @@ def quality_issues(data: dict, target_words: int) -> List[str]:
 # =============================================================================
 
 def outline_response_format() -> dict:
+    """Return the response_format object for the WpOutline JSON schema used in outline generation."""
     if not USE_JSON_SCHEMA:
         return {"type": "json_object"}
     return {
@@ -651,6 +745,21 @@ def outline_response_format() -> dict:
 
 
 def generate_draft_outline(meta: dict, target_words: int) -> dict:
+    """Generate article outline: title, seoSlug, excerpt, introHtml, and H3 headings.
+
+    Retries up to 4 times if the model returns fewer than 7 H3 headings.
+
+    Args:
+        meta: Normalized article metadata (primary, angle, audience, wpCategory, focusKeyword, etc.).
+        target_words: Target word count; influences the requested outline depth.
+
+    Returns:
+        Dict with keys: title, seoSlug, excerpt, introHtml, h3, category, tags,
+        tagSlugs, focusKeyword.
+
+    Raises:
+        RuntimeError: When all retry attempts fail or return too few headings.
+    """
     category = meta.get("wpCategory") or "SharePoint"
     focus_keyword = meta.get("focusKeyword", "")
 
@@ -740,6 +849,14 @@ def generate_draft_outline(meta: dict, target_words: int) -> dict:
 
 
 def section_response_format(min_len: int = 1200) -> dict:
+    """Return the response_format object for the WpSection JSON schema.
+
+    Args:
+        min_len: Minimum character length enforced on sectionHtml by the schema.
+
+    Returns:
+        Dict suitable for the response_format field of a chat-completions request.
+    """
     if not USE_JSON_SCHEMA:
         return {"type": "json_object"}
     return {
@@ -763,6 +880,17 @@ def _chars_min_for_words(words: int) -> int:
 
 
 def generate_section_html(meta: dict, h3_title: str, target_words: int, previous_sections: list[str] | None = None) -> str:
+    """Generate sanitized HTML content for a single article section.
+
+    Args:
+        meta: Article metadata (primary, angle, audience, wpCategory, focusKeyword).
+        h3_title: The H3 heading text for this section.
+        target_words: Approximate target word count for the section.
+        previous_sections: List of already-generated H3 heading titles (for deduplication).
+
+    Returns:
+        Sanitized HTML string for the section body (no enclosing <h3> tag).
+    """
     words = max(380, int(target_words))
     min_len = _chars_min_for_words(words)
 
@@ -803,6 +931,16 @@ def generate_section_html(meta: dict, h3_title: str, target_words: int, previous
 
 
 def topup_section_html(meta: dict, h3_title: str, deficit_words: int) -> str:
+    """Generate additional HTML content to top up an under-length section.
+
+    Args:
+        meta: Article metadata (used for context but not reprompted).
+        h3_title: The H3 heading of the section being extended.
+        deficit_words: Approximate number of words still needed to reach the target.
+
+    Returns:
+        Sanitized HTML string with new paragraphs/lists to append to the existing section.
+    """
     deficit = max(TOPUP_SECTION_MIN_DEFICIT, int(deficit_words))
     min_len = _chars_min_for_words(deficit)
 
@@ -829,6 +967,7 @@ def topup_section_html(meta: dict, h3_title: str, deficit_words: int) -> str:
 
 
 def refine_response_format(target_words: int) -> dict:
+    """Return the response_format object used during the full-article refinement call."""
     return response_format_for_model(target_words)
 
 
@@ -843,6 +982,26 @@ def refine_full_article(
     content_html: str,
     target_words: int,
 ) -> dict:
+    """Ask the LLM to refine a fully assembled article for flow, transitions, and keyword density.
+
+    Falls back to the pre-refinement content if the LLM call fails or returns
+    unparseable JSON.
+
+    Args:
+        meta: Article metadata including focusKeyword.
+        title: Current article title.
+        seo_slug: Current SEO slug.
+        excerpt: Current excerpt.
+        category: WordPress category string.
+        tags: List of tag name strings.
+        tag_slugs: Corresponding tag slug strings.
+        content_html: Assembled HTML content to refine.
+        target_words: Target word count for the final article.
+
+    Returns:
+        Refined article dict with keys: title, seoSlug, excerpt, category, tags,
+        tagSlugs, contentHtml, focusKeyword.
+    """
     current_words = count_words_from_html(content_html)
     needs_expansion = current_words < int(target_words * REFINE_EXPANSION_THRESHOLD)
     focus_keyword = meta.get("focusKeyword", "")
@@ -940,6 +1099,18 @@ def _strip_level_suffix(slug: str) -> str:
 
 
 def normalize_tags(data: dict, meta: dict) -> dict:
+    """Replace article tags with whitelisted tags from the anchor map.
+
+    Loads cfg_dir/tags.json (whitelist) and cfg_dir/anchor_map.json (slug → tag slugs).
+    When ANCHOR_STRICT=1 (default) and no anchor match is found, tags are cleared.
+
+    Args:
+        data: Article dict to mutate in-place (tags, tagSlugs keys updated).
+        meta: Article metadata containing seoSlugHint or SeoSlug for anchor lookup.
+
+    Returns:
+        The mutated data dict.
+    """
     import json
 
     def _load_tag_whitelist() -> dict[str, str]:
@@ -1073,6 +1244,22 @@ def _wp_call(method: str, url: str, *, headers: dict, timeout: int = 15, **kwarg
 
 
 def create_or_get_wp_tag(api_base: str, *, name: str, slug: str) -> int:
+    """Look up a WordPress tag by slug; create it if it does not exist.
+
+    Handles a race condition where the tag is created between GET and POST
+    by catching term_exists errors and returning the existing term ID.
+
+    Args:
+        api_base: WordPress REST API base URL (e.g. https://ksj.lv/wp-json).
+        name: Human-readable tag name.
+        slug: URL slug for the tag.
+
+    Returns:
+        WordPress tag ID (integer).
+
+    Raises:
+        RuntimeError: When the GET or POST request fails with a non-recoverable error.
+    """
     headers = _wp_auth_headers()
 
     # 1. Look up existing tag by slug
@@ -1119,6 +1306,19 @@ def create_or_get_wp_tag(api_base: str, *, name: str, slug: str) -> int:
 
 
 def ensure_wp_tag_ids(api_base: str, token: str, *, names: list[str], slugs: list[str]) -> list[int]:
+    """Resolve or create WordPress tags for each name/slug pair and return their IDs.
+
+    Individual tag failures are logged and skipped; the remaining IDs are returned.
+
+    Args:
+        api_base: WordPress REST API base URL.
+        token: JWT bearer token (currently unused directly; auth via _wp_auth_headers).
+        names: List of tag name strings.
+        slugs: Corresponding list of tag slug strings.
+
+    Returns:
+        List of WordPress tag IDs (may be shorter than names if some tags failed).
+    """
     ids: list[int] = []
     for name, slug in zip(names, slugs):
         try:
@@ -1134,6 +1334,18 @@ def ensure_wp_tag_ids(api_base: str, token: str, *, names: list[str], slugs: lis
 # =============================================================================
 
 def calculate_section_words(total_words: int, num_sections: int) -> int:
+    """Compute per-section target word count given total target and number of sections.
+
+    Reserves SECTION_INTRO_SHARE of total words for the intro, then distributes
+    the remainder across sections with a SECTION_WORD_BUFFER multiplier.
+
+    Args:
+        total_words: Overall article target word count.
+        num_sections: Number of H3 sections to distribute words across.
+
+    Returns:
+        Target word count per section (at least SECTION_MIN_WORDS).
+    """
     intro_share = SECTION_INTRO_SHARE
     remaining = total_words * (1 - intro_share)
     buffer = SECTION_WORD_BUFFER
@@ -1141,6 +1353,17 @@ def calculate_section_words(total_words: int, num_sections: int) -> int:
 
 
 def get_dynamic_max_tokens(target_words: int) -> int:
+    """Compute max_tokens for the LLM call scaled to the target word count.
+
+    Adds DYNAMIC_TOKENS_PER_1K_WORDS extra tokens per 1000 target words
+    and caps at GPT4O_MAX_OUTPUT_TOKENS.
+
+    Args:
+        target_words: Target article word count.
+
+    Returns:
+        Max output tokens to request from the model.
+    """
     base_tokens = DYNAMIC_TOKENS_BASE
     additional_per_thousand = DYNAMIC_TOKENS_PER_1K_WORDS
     extra_tokens = (target_words // 1000) * additional_per_thousand
@@ -1149,6 +1372,18 @@ def get_dynamic_max_tokens(target_words: int) -> int:
 
 
 def ensure_length_progress(current_html: str, target_words: int, phase: str) -> str:
+    """Log a warning when mid-process word count is below the minimum progress ratio.
+
+    Currently a no-op transformation — returns current_html unchanged.
+
+    Args:
+        current_html: Assembled HTML so far.
+        target_words: Final target word count.
+        phase: Pipeline phase label (e.g. "mid_process").
+
+    Returns:
+        current_html unchanged.
+    """
     current_words = count_words_from_html(current_html)
     progress_ratio = current_words / target_words
 
@@ -1160,6 +1395,19 @@ def ensure_length_progress(current_html: str, target_words: int, phase: str) -> 
 
 
 def needs_aggressive_topup(html: str, h3_title: str) -> bool:
+    """Return True when a section is structurally too weak to publish as-is.
+
+    Triggers when word count is below SECTION_TOPUP_MIN_WORDS, when a list is
+    absent and words are below SECTION_TOPUP_NO_LIST_MIN, or when ROI data is
+    missing from a section whose heading implies ROI content.
+
+    Args:
+        html: Current section HTML.
+        h3_title: Section heading text (used for ROI heuristic).
+
+    Returns:
+        True when an aggressive top-up should be attempted.
+    """
     word_count = count_words_from_html(html)
     has_list = count_tag(html, "ul") + count_tag(html, "ol") > 0
     has_roi = bool(re.search(r"(\d+\s?%|€|\bstund|\bmin|\beiro|\bEUR)", html, flags=re.I))
@@ -1175,6 +1423,15 @@ def needs_aggressive_topup(html: str, h3_title: str) -> bool:
 
 
 def validate_section_structure(html: str, h3_title: str) -> List[str]:
+    """Check a section's HTML against minimum structural requirements.
+
+    Args:
+        html: Section HTML content.
+        h3_title: Section heading text (for contextual error messages).
+
+    Returns:
+        List of issue strings; empty list means the section passes all checks.
+    """
     issues = []
     if count_words_from_html(html) < SECTION_VALIDATE_MIN_WORDS:
         issues.append(f"Sadaļa pārāk īsa (<{SECTION_VALIDATE_MIN_WORDS} vārdi)")
@@ -1190,6 +1447,21 @@ def validate_section_structure(html: str, h3_title: str) -> List[str]:
 
 
 def generate_aggressive_section(meta: dict, h3_title: str, target_words: int, previous_issues: List[str], previous_sections: list[str] | None = None) -> str:
+    """Retry section generation with an explicit failure list and mandatory structure prompt.
+
+    Used as the final fallback inside generate_section_html_with_validation when
+    the normal generator repeatedly fails validation.
+
+    Args:
+        meta: Article metadata.
+        h3_title: Section heading text.
+        target_words: Target word count for the section.
+        previous_issues: List of validation issue strings from earlier attempts.
+        previous_sections: List of already-generated H3 heading titles for context.
+
+    Returns:
+        Sanitized HTML string for the section body.
+    """
     prev_ctx = ", ".join(previous_sections) if previous_sections else "šī ir pirmā sadaļa"
     focus_kw = meta.get("focusKeyword", "") or ""
     wp_cat = meta.get("wpCategory", "") or "SharePoint"
@@ -1233,6 +1505,21 @@ def generate_aggressive_section(meta: dict, h3_title: str, target_words: int, pr
 
 
 def generate_section_html_with_validation(meta: dict, h3_title: str, target_words: int, max_retries: int = 2, previous_sections: list[str] | None = None) -> str:
+    """Generate a section, validate it, and retry with aggressive prompting if needed.
+
+    Runs up to max_retries normal attempts; on the final attempt delegates to
+    generate_aggressive_section with the accumulated validation issues.
+
+    Args:
+        meta: Article metadata.
+        h3_title: Section heading text.
+        target_words: Target word count for the section.
+        max_retries: Number of normal generation attempts before aggressive fallback.
+        previous_sections: List of already-generated H3 heading titles for context.
+
+    Returns:
+        Best-effort sanitized HTML string for the section body.
+    """
     for attempt in range(max_retries):
         html = generate_section_html(meta, h3_title, target_words, previous_sections=previous_sections)
         issues = validate_section_structure(html, h3_title)
@@ -2258,6 +2545,23 @@ def build_papildu_lasamviela(
 
 
 def build_wp_article_from_item(item: dict) -> dict:
+    """Synchronous single-call article generator entry point.
+
+    Picks the first SharePoint list item from a value-list payload, extracts
+    metadata, chooses mega vs multi-call mode, generates the article, runs quality
+    checks, normalizes tags, and resolves WordPress tag IDs.
+
+    Args:
+        item: Raw incoming request dict; may be a SharePoint value-list wrapper or
+              a flat metadata dict with keys primary, angle, audience, etc.
+
+    Returns:
+        Complete article dict with keys: title, seoSlug, excerpt, contentHtml,
+        category, tags, tagSlugs, focusKeyword, wpTagIds.
+
+    Raises:
+        RuntimeError: When required fields (primary, angle, audience) are missing.
+    """
     incoming = item or {}
     picked = pick_item(incoming)
     meta = extract_meta(picked)
