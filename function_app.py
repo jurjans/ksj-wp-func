@@ -486,19 +486,11 @@ def enqueue_wp_article(req: func.HttpRequest) -> func.HttpResponse:
     auth_level=func.AuthLevel.ANONYMOUS,
 )
 def wp_job_status(req: func.HttpRequest) -> func.HttpResponse:
+    """Read-only status poll. Does not advance the job. Use wp_job_tick (POST, FUNCTION) to advance."""
     op_id = req.route_params.get("opId")
     e = _status_get(op_id)
     if not e:
         return bad(404, error="not_found")
-
-    if (e.get("status") or "") not in {"done", "failed"}:
-        try:
-            tick_once(op_id)
-            e = _status_get(op_id)
-        except Exception as ex:
-            logging.exception("tick_once failed")
-            _status_upsert(op_id, "failed", error=str(ex)[:500])
-            e = _status_get(op_id)
 
     info = {k: e.get(k) for k in ("error", "blobPath", "blobUrl", "phase", "progress")}
     return ok(opId=op_id, status=e.get("status"), updatedUtc=e.get("updatedUtc"), info=info)
