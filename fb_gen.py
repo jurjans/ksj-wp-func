@@ -6,7 +6,6 @@ No Azure Functions dependencies — called by function_app route handler.
 """
 
 import re
-import logging
 
 from article_gen import (
     pick_item,
@@ -17,7 +16,6 @@ from article_gen import (
     http_post_json,
 )
 
-from image_gen import get_model
 from config import BOOK_LINK
 
 

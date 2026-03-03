@@ -9,7 +9,6 @@ Centralizes all Azure Storage SDK interactions:
 
 import datetime
 import json
-import logging
 
 from azure.data.tables import TableServiceClient
 from azure.storage.queue import QueueClient

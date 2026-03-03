@@ -961,9 +961,6 @@ def normalize_tags(data: dict, meta: dict) -> dict:
     return data
 
 
-import requests
-
-
 _WP_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 _WP_MAX_RETRIES = int(os.getenv("WP_MAX_RETRIES", "3"))
 _WP_RETRY_BASE_DELAY = float(os.getenv("WP_RETRY_BASE_DELAY", "1.0"))

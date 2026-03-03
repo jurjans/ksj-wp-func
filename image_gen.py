@@ -80,20 +80,6 @@ def get_images_headers() -> dict:
     }
 
 
-def get_provider_info() -> dict:
-    """Return current provider config for diagnostics."""
-    url = get_images_url()
-    provider = "openai" if "api.openai.com" in url else "azure"
-    return {
-        "provider": provider,
-        "force": FORCE_IMAGE_PROVIDER,
-        "deployment": AZURE_OPENAI_IMAGE_DEPLOYMENT,
-        "imagesUrl": url,
-        "has_OAI_KEY": bool(OAI_API_KEY),
-        "has_AZURE_TEXT": bool(AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY),
-    }
-
-
 # =============================================================================
 # Size helpers
 # =============================================================================
@@ -212,22 +198,6 @@ def synthesize_image_prompt(ctx: dict, style_hint: str) -> str:
     if not text:
         raise RuntimeError("prompt synthesis returned empty")
     return " ".join(text.strip().split())
-
-
-def build_fallback_prompt(ctx: dict) -> str:
-    """Simple fallback prompt when LLM synthesis fails."""
-    title = (ctx.get("title") or "").strip()
-    primary = (ctx.get("primary") or "").strip()
-    angle = (ctx.get("angle") or "").strip()
-    audience = (ctx.get("audience") or "").strip()
-    return " ".join([
-        "Create a Facebook header image.",
-        f"Topic: {title}.",
-        f"Primary: {primary}." if primary else "",
-        f"Angle: {angle}." if angle else "",
-        f"Audience: {audience}." if audience else "",
-        "Clean, minimalist, high-contrast. No text, no logos, no trademarks.",
-    ]).strip()
 
 
 # =============================================================================

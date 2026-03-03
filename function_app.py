@@ -5,21 +5,16 @@ import io
 import logging
 import os
 import re
-import ssl
 import unicodedata
 import urllib.error
 import urllib.request
 from urllib.parse import parse_qs
 from base64 import b64decode, b64encode
-from typing import List, Tuple
 
 import json
 import uuid
 import datetime
-import hmac
-import hashlib
 
-import requests
 from PIL import Image
 
 import azure.functions as func
@@ -34,8 +29,6 @@ from azure.storage.blob import (
     BlobSasPermissions,
 )
 from azure.core.exceptions import ResourceExistsError
-
-from docx_html import convert_docx_to_html
 
 # =============================================================================
 # Raksta Ä£enerÄ“Å¡anas helpers (iznesti uz atseviÅ¡Ä·u moduÄ¼i)
@@ -261,14 +254,6 @@ def coerce_size(w: int, h: int) -> tuple[int, int]:
     if (w, h) in allowed:
         return w, h
     return (1536, 1024) if w >= h else (1024, 1536)
-
-
-def get_model() -> str:
-    return (
-        os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
-        if is_azure_openai()
-        else os.getenv("OAI_MODEL", "gpt-4o-mini")
-    )
 
 
 # =============================================================================
