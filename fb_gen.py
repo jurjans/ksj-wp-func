@@ -16,7 +16,7 @@ from article_gen import (
     http_post_json,
 )
 
-from config import BOOK_LINK
+from config import BOOK_LINK, FB_COPY_MAX_TOKENS
 
 
 # =============================================================================
@@ -157,7 +157,7 @@ def generate_fb_copy(incoming: dict) -> dict:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_msg},
         ],
-        "max_tokens": 600,
+        "max_tokens": FB_COPY_MAX_TOKENS,
         "temperature": 0.2,
     }
 

@@ -30,6 +30,8 @@ from config import (
     FILLER_BUFFER_WORDS,
     WP_API_BASE,
     WP_TOKEN,
+    TOPUP_MIN_DEFICIT_WORDS,
+    DEFAULT_ARTICLE_TITLE,
 )
 
 from article_gen import (
@@ -94,7 +96,7 @@ def _phase_sections(op_id: str, state: dict, meta: dict, target_words: int) -> d
 
         words_now = count_words_from_html(html)
         need = int(per_sec * TOPUP_THRESHOLD) - words_now
-        if need > 60:
+        if need > TOPUP_MIN_DEFICIT_WORDS:
             try:
                 html_extra = topup_section_html(meta, h3_title, need)
                 html = (html.strip() + "\n\n" + html_extra.strip()).strip()
@@ -118,7 +120,7 @@ def _phase_finalize(op_id: str, state: dict, meta: dict, target_words: int) -> d
     """Assemble, refine, quality-check, and store the final article."""
     outline = state.get("outline") or {}
     title = outline.get("title") or (
-        meta.get("titleHint") or "SharePoint risinājumi praksē"
+        meta.get("titleHint") or DEFAULT_ARTICLE_TITLE
     )
     seo_slug = slugify(
         outline.get("seoSlug") or meta.get("seoSlugHint") or title

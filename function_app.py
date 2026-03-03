@@ -42,6 +42,20 @@ from article_gen import (
     http_post_json,
 )
 
+from config import (
+    SOCIAL_HEADER_W,
+    SOCIAL_HEADER_H,
+    CROP_LOSS_THRESHOLD,
+    IMAGE_API_TIMEOUT_SEC,
+    IMAGE_B64_MIN_LEN,
+    PROMPT_SYNTHESIS_MAX_TOKENS,
+    PROMPT_SYNTHESIS_TIMEOUT_SEC,
+    ALT_TEXT_MAX_LEN,
+    IMG_DESC_MAX_LEN,
+    DEFAULT_TARGET_WORDS,
+    SAS_HOURS_VALID,
+)
+
 from article_worker import tick_once
 
 # =============================================================================
@@ -95,7 +109,7 @@ def _ensure_storage_objects():
         pass
 
 
-def _make_sas_url(op_id: str, hours_valid: int = 24) -> str | None:
+def _make_sas_url(op_id: str, hours_valid: int = SAS_HOURS_VALID) -> str | None:
     """Generate short-term read-only SAS URL for results/{op_id}.json."""
     try:
         bsc = _blob_service()
@@ -431,9 +445,9 @@ def enqueue_wp_article(req: func.HttpRequest) -> func.HttpResponse:
     op_id = uuid.uuid4().hex
 
     try:
-        target_words = int(incoming.get("targetWords", 5000))
+        target_words = int(incoming.get("targetWords", DEFAULT_TARGET_WORDS))
     except Exception:
-        target_words = 5000
+        target_words = DEFAULT_TARGET_WORDS
 
     state = {
         "opId": op_id,
@@ -570,10 +584,10 @@ def ksj_build_image_meta(ctx: dict, prompt_used: str, ext: str = ".png") -> dict
     alt = title
     if KSJ_KEYWORD.lower() not in alt.lower():
         alt = f"{alt} â€” {KSJ_KEYWORD}"
-    alt = _ksj_trunc(alt, 120)
+    alt = _ksj_trunc(alt, ALT_TEXT_MAX_LEN)
 
     caption = title
-    desc = _ksj_trunc(f"{title}. {KSJ_DESC_SUFFIX}", 220)
+    desc = _ksj_trunc(f"{title}. {KSJ_DESC_SUFFIX}", IMG_DESC_MAX_LEN)
 
     stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
     fname = f"{_ksj_slug(title)}-{stamp}{ext or '.png'}"
@@ -614,11 +628,11 @@ def synthesize_image_prompt(ctx: dict, style_hint: str) -> str:
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        "max_tokens": 300,
+        "max_tokens": PROMPT_SYNTHESIS_MAX_TOKENS,
         "temperature": 0.7,
     }
 
-    outer = http_post_json(get_url(), get_headers(), payload, timeout_sec=45)
+    outer = http_post_json(get_url(), get_headers(), payload, timeout_sec=PROMPT_SYNTHESIS_TIMEOUT_SEC)
     text = (
         outer.get("output_text")
         or outer.get("output")
@@ -691,7 +705,7 @@ def generate_image(req: func.HttpRequest) -> func.HttpResponse:
     fit_mode = (incoming.get("fitMode") or os.getenv("IMAGE_FIT_MODE") or "auto").lower()
 
     try:
-        outer = http_post_json(url, headers, body, timeout_sec=120)
+        outer = http_post_json(url, headers, body, timeout_sec=IMAGE_API_TIMEOUT_SEC)
     except urllib.error.HTTPError as e:
         txt = e.read().decode("utf-8") if hasattr(e, "read") else str(e)
         return bad(502, error="images api http", message=txt[:400])
@@ -703,13 +717,13 @@ def generate_image(req: func.HttpRequest) -> func.HttpResponse:
         b64 = data[0].get("b64_json") if data else None
         if not b64 or not isinstance(b64, str) or not b64.strip():
             return bad(502, error="no image in response", raw=str(outer)[:400])
-        if len(b64) < 1000:
+        if len(b64) < IMAGE_B64_MIN_LEN:
             return bad(502, error="image too small", raw=str(outer)[:400])
 
         try:
             raw = b64decode(b64)
             img = Image.open(io.BytesIO(raw)).convert("RGBA")
-            target_w, target_h = 1200, 630
+            target_w, target_h = SOCIAL_HEADER_W, SOCIAL_HEADER_H
             tr = target_w / target_h
             w0, h0 = img.width, img.height
 
@@ -742,7 +756,7 @@ def generate_image(req: func.HttpRequest) -> func.HttpResponse:
                 else:
                     cover_w, cover_h = w0, int(w0 / tr)
                 kept = (cover_w * cover_h) / (w0 * h0)
-                mode = "contain" if (1 - kept) > 0.18 else "cover"
+                mode = "contain" if (1 - kept) > CROP_LOSS_THRESHOLD else "cover"
 
             if mode == "cover":
                 img = crop_cover(img)

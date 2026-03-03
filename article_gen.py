@@ -8,6 +8,36 @@ from typing import List, Tuple
 from datetime import datetime
 import time
 
+from config import (
+    SECTION_INTRO_SHARE,
+    SECTION_WORD_BUFFER,
+    SECTION_MIN_WORDS,
+    SECTION_VALIDATE_MIN_WORDS,
+    SECTION_VALIDATE_MIN_PARAS,
+    SECTION_TOPUP_MIN_WORDS,
+    SECTION_TOPUP_NO_LIST_MIN,
+    TOPUP_SECTION_MIN_DEFICIT,
+    REFINE_EXPANSION_THRESHOLD,
+    PROGRESS_MIN_RATIO,
+    KW_DENSITY_MIN_PCT,
+    KW_DENSITY_MAX_PCT,
+    KW_SAFETY_NET_DENSITY_PCT,
+    KW_SAFETY_NET_MAX_INJECTIONS,
+    KW_INJECT_MIN_PARA_CHARS,
+    OUTLINE_MAX_TOKENS,
+    SECTION_MAX_TOKENS,
+    TOPUP_MAX_TOKENS,
+    MEGA_BATCH_MAX_TOKENS,
+    DYNAMIC_TOKENS_BASE,
+    DYNAMIC_TOKENS_PER_1K_WORDS,
+    GPT4O_MAX_OUTPUT_TOKENS,
+    MEGA_WORD_INFLATION,
+    MEGA_SECTION_WORD_MULTIPLIER,
+    MEGA_SECTION_MIN_WORDS,
+    MEGA_OUTLINE_H3_MIN,
+    SUMMARIZE_PREVIOUS_MAX_CHARS,
+)
+
 DEFAULT_TTL = 60 * 60 * 48   # 48 hours
 TOP_N_DEFAULT = 6            # top-N candidates to enrich by default
 MONTHLY_GUARD = 200          # safety cap for SerpApi calls per month
@@ -574,10 +604,10 @@ def quality_issues(data: dict, target_words: int) -> List[str]:
 
         keyword_count = content.lower().count(focus_keyword.lower())
         keyword_density = (keyword_count / max(1, w)) * 100
-        if keyword_density < 1.0:
-            issues.append(f"Keyword blīvums pārāk zems ({keyword_density:.2f}% < 1.0%)")
-        elif keyword_density > 1.5:
-            issues.append(f"Keyword blīvums pārāk augsts ({keyword_density:.2f}% > 1.5%)")
+        if keyword_density < KW_DENSITY_MIN_PCT:
+            issues.append(f"Keyword blīvums pārāk zems ({keyword_density:.2f}% < {KW_DENSITY_MIN_PCT}%)")
+        elif keyword_density > KW_DENSITY_MAX_PCT:
+            issues.append(f"Keyword blīvums pārāk augsts ({keyword_density:.2f}% > {KW_DENSITY_MAX_PCT}%)")
 
         keyword_in_headings = len(
             re.findall(fr'<h[23][^>]*>.*?{re.escape(focus_keyword)}.*?</h[23]>', content, re.I)
@@ -654,7 +684,7 @@ def generate_draft_outline(meta: dict, target_words: int) -> dict:
             {"role": "system", "content": ARTICLE_SYSTEM_PROMPT},
             {"role": "user", "content": outline_prompt},
         ],
-        "max_tokens": min(MAX_TOKENS_MAIN, 3000),
+        "max_tokens": min(MAX_TOKENS_MAIN, OUTLINE_MAX_TOKENS),
         "temperature": 0.2,
         "response_format": outline_response_format(),
     }
@@ -761,7 +791,7 @@ def generate_section_html(meta: dict, h3_title: str, target_words: int, previous
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        "max_tokens": 3500,
+        "max_tokens": SECTION_MAX_TOKENS,
         "temperature": 0.7,
         "presence_penalty": 0.3,
         "frequency_penalty": 0.2,
@@ -773,7 +803,7 @@ def generate_section_html(meta: dict, h3_title: str, target_words: int, previous
 
 
 def topup_section_html(meta: dict, h3_title: str, deficit_words: int) -> str:
-    deficit = max(120, int(deficit_words))
+    deficit = max(TOPUP_SECTION_MIN_DEFICIT, int(deficit_words))
     min_len = _chars_min_for_words(deficit)
 
     user = (
@@ -788,7 +818,7 @@ def topup_section_html(meta: dict, h3_title: str, deficit_words: int) -> str:
             {"role": "system", "content": "Tu papildini esošo sadaļu ar jaunu saturu; neesi repetitīvs."},
             {"role": "user", "content": user},
         ],
-        "max_tokens": 1800,
+        "max_tokens": TOPUP_MAX_TOKENS,
         "temperature": 0.7,
         "presence_penalty": 0.4,
         "frequency_penalty": 0.2,
@@ -814,19 +844,19 @@ def refine_full_article(
     target_words: int,
 ) -> dict:
     current_words = count_words_from_html(content_html)
-    needs_expansion = current_words < int(target_words * 0.9)
+    needs_expansion = current_words < int(target_words * REFINE_EXPANSION_THRESHOLD)
     focus_keyword = meta.get("focusKeyword", "")
 
     focus_keyword_quality = ""
     if focus_keyword:
         keyword_count = content_html.lower().count(focus_keyword.lower())
         keyword_density = (keyword_count / max(1, current_words)) * 100
-        ideal_min = int(current_words * 0.010)  # 1.0%
-        ideal_max = int(current_words * 0.015)  # 1.5%
+        ideal_min = int(current_words * KW_DENSITY_MIN_PCT / 100)
+        ideal_max = int(current_words * KW_DENSITY_MAX_PCT / 100)
 
-        if keyword_density < 1.0:
+        if keyword_density < KW_DENSITY_MIN_PCT:
             density_action = f"PĀRĀK ZEMS ({keyword_density:.2f}%). Pievieno vēl {ideal_min - keyword_count} atkārtojumus organiski."
-        elif keyword_density > 1.5:
+        elif keyword_density > KW_DENSITY_MAX_PCT:
             density_action = f"PĀRĀK AUGSTS ({keyword_density:.2f}%). Samazini par {keyword_count - ideal_max} — aizstāj ar sinonīmiem vai pārfrāzē."
         else:
             density_action = f"LABI ({keyword_density:.2f}%). Nemainīt."
@@ -1104,25 +1134,25 @@ def ensure_wp_tag_ids(api_base: str, token: str, *, names: list[str], slugs: lis
 # =============================================================================
 
 def calculate_section_words(total_words: int, num_sections: int) -> int:
-    intro_share = 0.08
+    intro_share = SECTION_INTRO_SHARE
     remaining = total_words * (1 - intro_share)
-    buffer = 1.15
-    return max(600, int((remaining * buffer) / max(6, num_sections)))
+    buffer = SECTION_WORD_BUFFER
+    return max(SECTION_MIN_WORDS, int((remaining * buffer) / max(6, num_sections)))
 
 
 def get_dynamic_max_tokens(target_words: int) -> int:
-    base_tokens = 12000
-    additional_per_thousand = 2000
+    base_tokens = DYNAMIC_TOKENS_BASE
+    additional_per_thousand = DYNAMIC_TOKENS_PER_1K_WORDS
     extra_tokens = (target_words // 1000) * additional_per_thousand
-    # Azure OpenAI GPT-4o max output is 16384 tokens
-    return min(16384, base_tokens + extra_tokens)
+    # Azure OpenAI GPT-4o max output is GPT4O_MAX_OUTPUT_TOKENS tokens
+    return min(GPT4O_MAX_OUTPUT_TOKENS, base_tokens + extra_tokens)
 
 
 def ensure_length_progress(current_html: str, target_words: int, phase: str) -> str:
     current_words = count_words_from_html(current_html)
     progress_ratio = current_words / target_words
 
-    if progress_ratio < 0.7 and phase == "mid_process":
+    if progress_ratio < PROGRESS_MIN_RATIO and phase == "mid_process":
         additional_target = target_words - current_words
         logging.info(f"Garuma progress tikai {progress_ratio:.1%}, nepieciešami papildus {additional_target} vārdi")
 
@@ -1134,9 +1164,9 @@ def needs_aggressive_topup(html: str, h3_title: str) -> bool:
     has_list = count_tag(html, "ul") + count_tag(html, "ol") > 0
     has_roi = bool(re.search(r"(\d+\s?%|€|\bstund|\bmin|\beiro|\bEUR)", html, flags=re.I))
 
-    if word_count < 120:
+    if word_count < SECTION_TOPUP_MIN_WORDS:
         return True
-    if not has_list and word_count < 200:
+    if not has_list and word_count < SECTION_TOPUP_NO_LIST_MIN:
         return True
     if not has_roi and any(word in h3_title.lower() for word in ['ieguvums', 'roi', 'ietaupījums', 'efektivitāte']):
         return True
@@ -1146,10 +1176,10 @@ def needs_aggressive_topup(html: str, h3_title: str) -> bool:
 
 def validate_section_structure(html: str, h3_title: str) -> List[str]:
     issues = []
-    if count_words_from_html(html) < 150:
-        issues.append("Sadaļa pārāk īsa (<150 vārdi)")
-    if count_tag(html, "p") < 3:
-        issues.append("Vajag vismaz 3 rindkopas")
+    if count_words_from_html(html) < SECTION_VALIDATE_MIN_WORDS:
+        issues.append(f"Sadaļa pārāk īsa (<{SECTION_VALIDATE_MIN_WORDS} vārdi)")
+    if count_tag(html, "p") < SECTION_VALIDATE_MIN_PARAS:
+        issues.append(f"Vajag vismaz {SECTION_VALIDATE_MIN_PARAS} rindkopas")
     if (count_tag(html, "ul") + count_tag(html, "ol")) < 1:
         issues.append("Trūkst saraksta (ul/ol)")
     if not re.search(r"\b(piemēr|scenārij|solis|darbīb|iestatījum|konfigurē)\w*\b", html, re.I):
@@ -1192,7 +1222,7 @@ def generate_aggressive_section(meta: dict, h3_title: str, target_words: int, pr
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        "max_tokens": 3500,
+        "max_tokens": SECTION_MAX_TOKENS,
         "temperature": 0.3,
         "response_format": section_response_format(target_words),
     }
@@ -1456,7 +1486,7 @@ MEGA_BATCH_USER = (
 )
 
 
-def _summarize_previous(intro_html: str, sections: list[dict], max_chars: int = 2000) -> str:
+def _summarize_previous(intro_html: str, sections: list[dict], max_chars: int = SUMMARIZE_PREVIOUS_MAX_CHARS) -> str:
     """Build a compact summary of already-written content for context."""
     parts = []
     if intro_html:
@@ -1484,7 +1514,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
     # GPT typically produces 70-85% of requested words; inflate by 40% so output
     # lands above the user's actual target (e.g., 2000 → 2800 → output ~2000+)
     original_target = target_words
-    target_words = int(target_words * 1.40)
+    target_words = int(target_words * MEGA_WORD_INFLATION)
     if target_words > MEGA_MAX_WORDS:
         target_words = MEGA_MAX_WORDS
     logging.info(f"[mega] Target inflated: {original_target} → {target_words} words")
@@ -1564,7 +1594,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
             {"role": "system", "content": MEGA_SYSTEM_PROMPT},
             {"role": "user", "content": outline_msg},
         ],
-        "max_tokens": 3000,
+        "max_tokens": OUTLINE_MAX_TOKENS,
         "temperature": 0.3,
         "response_format": {"type": "json_object"},
     })
@@ -1573,7 +1603,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
     intro_html = outline_data.get("introHtml") or "<h2>Ievads</h2><p>-</p>"
     h3_list = [h.strip() for h in outline_data.get("h3", []) if isinstance(h, str) and h.strip()]
 
-    if len(h3_list) < 4:
+    if len(h3_list) < MEGA_OUTLINE_H3_MIN:
         h3_list = [
             "Biznesa vajadzības un mērķi",
             "Informācijas arhitektūra",
@@ -1590,7 +1620,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
     # ── Phase 2: Generate sections in batches ─────────────────────────────
     BATCH_SIZE = int(os.getenv("MEGA_BATCH_SIZE", "4"))
     # Ask for 1.5x words per section — GPT consistently underdelivers in JSON mode
-    words_per_section = max(250, int((target_words / len(h3_list)) * 1.5))
+    words_per_section = max(MEGA_SECTION_MIN_WORDS, int((target_words / len(h3_list)) * MEGA_SECTION_WORD_MULTIPLIER))
     all_sections: list[dict] = []
 
     for batch_start in range(0, len(h3_list), BATCH_SIZE):
@@ -1621,7 +1651,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
                 {"role": "system", "content": MEGA_SYSTEM_PROMPT},
                 {"role": "user", "content": batch_msg},
             ],
-            "max_tokens": min(max_tokens, 8000),
+            "max_tokens": min(max_tokens, MEGA_BATCH_MAX_TOKENS),
             "temperature": 0.4,
             "response_format": {"type": "json_object"},
         })
@@ -1671,7 +1701,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
                             {"role": "system", "content": MEGA_SYSTEM_PROMPT},
                             {"role": "user", "content": individual_msg},
                         ],
-                        "max_tokens": 3000,
+                        "max_tokens": OUTLINE_MAX_TOKENS,
                         "temperature": 0.4,
                         "response_format": {"type": "json_object"},
                     })
@@ -1706,15 +1736,15 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
             focus_keyword, current_count, density, total_words_est,
         )
 
-        if density < 0.3:
+        if density < KW_SAFETY_NET_DENSITY_PCT:
             logging.warning(
-                "[mega] Safety net triggered: density %.2f%% < 0.3%% — applying max 3 injections",
-                density,
+                "[mega] Safety net triggered: density %.2f%% < %.1f%% — applying max %d injections",
+                density, KW_SAFETY_NET_DENSITY_PCT, KW_SAFETY_NET_MAX_INJECTIONS,
             )
             injected = 0
 
             # Injection 1: keyword paragraph immediately after first </h2>
-            if injected < 3:
+            if injected < KW_SAFETY_NET_MAX_INJECTIONS:
                 kw_sentence = (
                     f"<p><strong>{focus_keyword}</strong> ir viena no svarīgākajām tēmām, "
                     f"ko organizācijas risina, lai uzlabotu savu digitālo infrastruktūru.</p>"
@@ -1728,11 +1758,11 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
 
             # Injections 2-3: append keyword naturally to substantial paragraphs
             # Two distinct phrases so consecutive injections are not identical
-            if injected < 3:
+            if injected < KW_SAFETY_NET_MAX_INJECTIONS:
                 p_pattern = re.compile(r'(<p>)(.*?)(</p>)', re.DOTALL)
                 substantial = [
                     m for m in p_pattern.finditer(content_html)
-                    if len(re.sub(r'<[^>]+>', '', m.group(2))) > 80
+                    if len(re.sub(r'<[^>]+>', '', m.group(2))) > KW_INJECT_MIN_PARA_CHARS
                     and kw_lower not in m.group(2).lower()
                 ]
                 extra_phrases = [
@@ -1740,7 +1770,7 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
                     f" Praksē {focus_keyword} palīdz organizācijām ievērojami samazināt administratīvo slodzi.",
                 ]
                 for idx, m in enumerate(substantial):
-                    if injected >= 3:
+                    if injected >= KW_SAFETY_NET_MAX_INJECTIONS:
                         break
                     phrase = extra_phrases[idx % len(extra_phrases)]
                     new_p = f"{m.group(1)}{m.group(2)}{phrase}{m.group(3)}"
