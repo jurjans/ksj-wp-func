@@ -350,6 +350,23 @@ def generate_wp_article(req: func.HttpRequest) -> func.HttpResponse:
 # =============================================================================
 # HTTP: FB copy generator
 # =============================================================================
+@app.function_name(name="generate_fb_copy")
+@app.route(
+    route="generate-fb-copy",
+    methods=["POST"],
+    auth_level=func.AuthLevel.FUNCTION,
+)
+def generate_fb_copy_route(req: func.HttpRequest) -> func.HttpResponse:
+    incoming = read_incoming(req)
+    if not incoming:
+        return bad(400, error="Invalid JSON body")
+    try:
+        data = generate_fb_copy(incoming)
+    except Exception as e:
+        logging.exception("generate_fb_copy failed")
+        return bad(500, error="fb_copy_failed", message=str(e)[:500])
+    return ok(**data)
+
 
 #==============================================================================
 # HTTP: KeywordExtractor
@@ -469,6 +486,32 @@ def enqueue_wp_article(req: func.HttpRequest) -> func.HttpResponse:
     auth_level=func.AuthLevel.ANONYMOUS,
 )
 def wp_job_status(req: func.HttpRequest) -> func.HttpResponse:
+    op_id = req.route_params.get("opId")
+    e = _status_get(op_id)
+    if not e:
+        return bad(404, error="not_found")
+
+    if (e.get("status") or "") not in {"done", "failed"}:
+        try:
+            tick_once(op_id)
+            e = _status_get(op_id)
+        except Exception as ex:
+            logging.exception("tick_once failed")
+            _status_upsert(op_id, "failed", error=str(ex)[:500])
+            e = _status_get(op_id)
+
+    info = {k: e.get(k) for k in ("error", "blobPath", "blobUrl", "phase", "progress")}
+    return ok(opId=op_id, status=e.get("status"), updatedUtc=e.get("updatedUtc"), info=info)
+
+
+@app.function_name(name="wp_job_tick")
+@app.route(
+    route="wp-job-tick/{opId}",
+    methods=["POST"],
+    auth_level=func.AuthLevel.FUNCTION,
+)
+def wp_job_tick(req: func.HttpRequest) -> func.HttpResponse:
+    """Advance the job by one tick. Called by Power Automate flow."""
     op_id = req.route_params.get("opId")
     e = _status_get(op_id)
     if not e:
