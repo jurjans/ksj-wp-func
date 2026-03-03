@@ -1693,80 +1693,64 @@ def build_wp_article_mega(meta: dict, target_words: int) -> dict:
     content_html = sanitize_html(normalize_lv_headings("\n\n".join(content_parts)))
 
     # ── Keyword safety net ────────────────────────────────────────────────
-    # Ensure focus keyword appears in content even if GPT didn't follow instructions
+    # Fires ONLY when density is near-zero (<0.3%) — i.e. GPT completely
+    # ignored keyword instructions. Normal 1-1.5% density is handled by
+    # prompt-layer instructions (MEGA_OUTLINE_USER, MEGA_BATCH_USER).
+    # Maximum 3 injections total to avoid over-stuffing.
     if focus_keyword:
         kw_lower = focus_keyword.lower()
-
-        # Strip HTML to check plain text content
         plain_text = re.sub(r'<[^>]+>', ' ', content_html)
-        plain_lower = plain_text.lower()
-        kw_count = plain_lower.count(kw_lower)
-        logging.info(f"[mega] Keyword '{focus_keyword}' appears {kw_count} times in plain text")
+        total_words_est = len(plain_text.split())
+        current_count = plain_text.lower().count(kw_lower)
+        density = (current_count / max(1, total_words_est)) * 100
 
-        # 1. Ensure keyword at beginning of content — prepend a new paragraph after <h2>
-        if kw_lower not in plain_lower[:500]:
-            kw_sentence = (
-                f"<p><strong>{focus_keyword}</strong> ir viena no svarīgākajām tēmām, "
-                f"ko organizācijas risina, lai uzlabotu savu digitālo infrastruktūru.</p>"
+        logging.info(
+            "[mega] Keyword '%s': %d occurrence(s), %.2f%% density (%d words)",
+            focus_keyword, current_count, density, total_words_est,
+        )
+
+        if density < 0.3:
+            logging.warning(
+                "[mega] Safety net triggered: density %.2f%% < 0.3%% — applying max 3 injections",
+                density,
             )
-            # Insert after closing </h2> tag or after first <h2>...</h2> block
-            h2_pattern = re.compile(r'(</h2>)', re.IGNORECASE)
-            if h2_pattern.search(content_html):
-                content_html = h2_pattern.sub(r'\1\n' + kw_sentence, content_html, count=1)
-                logging.info("[mega] Injected keyword paragraph after <h2>")
-            else:
-                content_html = kw_sentence + "\n" + content_html
-                logging.info("[mega] Prepended keyword paragraph at start")
+            injected = 0
 
-        # 2. Ensure keyword in at least 2 H3 subheadings
-        h3_pattern = re.compile(r'<h3>([^<]+)</h3>')
-        h3_matches = h3_pattern.findall(content_html)
-        h3_with_kw = sum(1 for h in h3_matches if kw_lower in h.lower())
-        if h3_with_kw < 2 and h3_matches:
-            replaced = 0
-            for h3_text in h3_matches:
-                if kw_lower not in h3_text.lower() and replaced < (2 - h3_with_kw):
-                    new_h3 = f"{h3_text} — {focus_keyword}"
-                    content_html = content_html.replace(
-                        f"<h3>{h3_text}</h3>",
-                        f"<h3>{new_h3}</h3>",
-                        1,
-                    )
-                    replaced += 1
-            if replaced:
-                logging.info(f"[mega] Added keyword to {replaced} H3 subheadings")
+            # Injection 1: keyword paragraph immediately after first </h2>
+            if injected < 3:
+                kw_sentence = (
+                    f"<p><strong>{focus_keyword}</strong> ir viena no svarīgākajām tēmām, "
+                    f"ko organizācijas risina, lai uzlabotu savu digitālo infrastruktūru.</p>"
+                )
+                h2_pattern = re.compile(r'(</h2>)', re.IGNORECASE)
+                if h2_pattern.search(content_html):
+                    content_html = h2_pattern.sub(r'\1\n' + kw_sentence, content_html, count=1)
+                else:
+                    content_html = kw_sentence + "\n" + content_html
+                injected += 1
 
-        # 3. Ensure minimum keyword density (~1%) — inject into paragraphs
-        plain_text2 = re.sub(r'<[^>]+>', ' ', content_html)
-        total_words_est = len(plain_text2.split())
-        target_occurrences = max(8, total_words_est // 120)  # ~1 per 120 words ≈ 1% density
-        current_count = plain_text2.lower().count(kw_lower)
-
-        if current_count < target_occurrences:
-            # Find ALL <p>...</p> blocks (including those with inner HTML)
-            p_pattern = re.compile(r'(<p>)(.*?)(</p>)', re.DOTALL)
-            p_matches = list(p_pattern.finditer(content_html))
-            # Filter to substantial paragraphs (>50 chars of text)
-            substantial = [m for m in p_matches if len(re.sub(r'<[^>]+>', '', m.group(2))) > 50]
-
-            need = target_occurrences - current_count
-            if substantial:
-                step = max(1, len(substantial) // (need + 1))
-                injected = 0
-                for i in range(0, len(substantial), step):
-                    if injected >= need:
+            # Injections 2-3: append keyword naturally to substantial paragraphs
+            # Two distinct phrases so consecutive injections are not identical
+            if injected < 3:
+                p_pattern = re.compile(r'(<p>)(.*?)(</p>)', re.DOTALL)
+                substantial = [
+                    m for m in p_pattern.finditer(content_html)
+                    if len(re.sub(r'<[^>]+>', '', m.group(2))) > 80
+                    and kw_lower not in m.group(2).lower()
+                ]
+                extra_phrases = [
+                    f" {focus_keyword} šajā kontekstā ir būtisks faktors efektīvai ieviešanai.",
+                    f" Praksē {focus_keyword} palīdz organizācijām ievērojami samazināt administratīvo slodzi.",
+                ]
+                for idx, m in enumerate(substantial):
+                    if injected >= 3:
                         break
-                    m = substantial[i]
-                    p_text = m.group(2).lower()
-                    if kw_lower not in p_text:
-                        old_p = m.group(0)
-                        # Insert keyword phrase before closing </p>
-                        new_p = f"{m.group(1)}{m.group(2)} {focus_keyword} nodrošina tieši šādu pieeju.{m.group(3)}"
-                        content_html = content_html.replace(old_p, new_p, 1)
-                        injected += 1
+                    phrase = extra_phrases[idx % len(extra_phrases)]
+                    new_p = f"{m.group(1)}{m.group(2)}{phrase}{m.group(3)}"
+                    content_html = content_html.replace(m.group(0), new_p, 1)
+                    injected += 1
 
-                final_count = re.sub(r'<[^>]+>', ' ', content_html).lower().count(kw_lower)
-                logging.info(f"[mega] Keyword density: {current_count} → {final_count} ({final_count}/{total_words_est} words)")
+            logging.info("[mega] Safety net complete: %d injection(s) applied", injected)
 
     content_html = sanitize_html(content_html)
 
