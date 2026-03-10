@@ -1020,14 +1020,18 @@ def refine_full_article(
         else:
             density_action = f"LABI ({keyword_density:.2f}%). Nemainīt."
 
-        focus_keyword_quality = (
-            f"\nFOCUS KEYWORD KVALITĀTE: '{focus_keyword}'"
-            f"\n- Pašreizējais: {keyword_count}× ({keyword_density:.2f}%), mērķis: {ideal_min}-{ideal_max}× (1-1.5%)"
-            f"\n- DARBĪBA: {density_action}"
+        placement_hint = (
             f"\n- Pārliecinies, ka keywords parādās:"
             f"\n  * Pirmajā rindkopā"
             f"\n  * Vismaz 2-3 apakšvirsrakstos (h2/h3)"
             f"\n  * Vienmērīgi visā tekstā"
+        ) if keyword_density < KW_DENSITY_MIN_PCT else ""
+
+        focus_keyword_quality = (
+            f"\nFOCUS KEYWORD KVALITĀTE: '{focus_keyword}'"
+            f"\n- Pašreizējais: {keyword_count}× ({keyword_density:.2f}%), mērķis: {ideal_min}-{ideal_max}× (1-1.5%)"
+            f"\n- DARBĪBA: {density_action}"
+            f"{placement_hint}"
         )
 
     user = (
