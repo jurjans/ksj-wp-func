@@ -9,6 +9,7 @@ from datetime import datetime
 import time
 
 from config import (
+    AZURE_OPENAI_API_VERSION,
     SECTION_INTRO_SHARE,
     SECTION_WORD_BUFFER,
     SECTION_MIN_WORDS,
@@ -260,7 +261,7 @@ def get_url() -> str:
     """
     if is_azure_openai():
         base = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
-        ver = os.getenv("AZURE_OPENAI_API_VERSION", "2024-11-20")
+        ver = AZURE_OPENAI_API_VERSION
         dep = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
         return f"{base}/openai/deployments/{dep}/chat/completions?api-version={ver}"
     else:
