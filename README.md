@@ -78,7 +78,17 @@ Copy `local.settings.json.example` to `local.settings.json` for local developmen
 |---|---|
 | `STORAGE` | Azure Storage connection string (Table + Queue + Blob) |
 | `WP_API_BASE` | WordPress REST API base URL, e.g. `https://ksj.lv/wp-json/wp/v2` |
-| `WP_TOKEN` | WordPress application password token (Base64 `user:password`) |
+| `WP_TOKEN` | WordPress JWT bearer token (used when `WP_AUTH_SCHEME=jwt`) |
+
+### WordPress Authentication
+
+| Variable | Default | Description |
+|---|---|---|
+| `WP_AUTH_SCHEME` | `jwt` | Auth mode: `jwt` (Bearer token via `WP_TOKEN`) or `basic` (app password via `WP_BASIC_AUTH_B64` or `WP_USER` + `WP_APP_PASSWORD`) |
+| `WP_TOKEN` | — | JWT bearer token; required when `WP_AUTH_SCHEME=jwt` |
+| `WP_BASIC_AUTH_B64` | — | Pre-encoded Base64 `user:app-password`; used when `WP_AUTH_SCHEME=basic` |
+| `WP_USER` | — | WordPress username; used with `WP_APP_PASSWORD` if `WP_BASIC_AUTH_B64` is blank |
+| `WP_APP_PASSWORD` | — | WordPress application password (Settings → Users → Application Passwords) |
 
 ### OpenAI (direct)
 
@@ -96,7 +106,7 @@ Copy `local.settings.json.example` to `local.settings.json` for local developmen
 | `AZURE_OPENAI_ENDPOINT` | — | Azure OpenAI resource endpoint URL |
 | `AZURE_OPENAI_API_KEY` | — | Azure OpenAI API key |
 | `AZURE_OPENAI_DEPLOYMENT` | `gpt-4o-mini` | Text deployment name |
-| `AZURE_OPENAI_API_VERSION` | `2024-02-15-preview` | API version for text calls |
+| `AZURE_OPENAI_API_VERSION` | `2024-08-01-preview` | API version for text calls |
 | `AZURE_OPENAI_IMAGE_DEPLOYMENT` | — | Image deployment name (DALL-E 3) |
 | `AZURE_OPENAI_API_VERSION_IMAGES` | same as above | API version for image calls |
 
@@ -146,7 +156,7 @@ The app auto-detects which provider to use. Set `FORCE_IMAGE_PROVIDER=azure` or 
 
 ```bash
 # 1. Clone and create virtual environment
-git clone <repo-url>
+git clone https://github.com/jurjans/ksj-wp-func.git
 cd ksj-wp-func
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate

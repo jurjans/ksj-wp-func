@@ -1,0 +1,80 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+
+    // --- Azure Storage (required) ---
+    // For Azurite: "UseDevelopmentStorage=true"
+    // For real storage: DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net
+    "STORAGE": "UseDevelopmentStorage=true",
+
+    // --- OpenAI (direct) — use this OR Azure OpenAI below ---
+    "OAI_API_KEY": "sk-...",
+    "OAI_BASE_URL": "https://api.openai.com/v1",
+    "OAI_MODEL": "gpt-4o-mini",
+    "OAI_IMAGE_MODEL": "gpt-image-1",
+
+    // --- Azure OpenAI — use this OR OpenAI above ---
+    "AZURE_OPENAI_ENDPOINT": "https://YOUR-RESOURCE.openai.azure.com",
+    "AZURE_OPENAI_API_KEY": "your-azure-openai-key",
+    "AZURE_OPENAI_DEPLOYMENT": "gpt-4o-mini",
+    "AZURE_OPENAI_API_VERSION": "2024-08-01-preview",
+    "AZURE_OPENAI_IMAGE_DEPLOYMENT": "",
+    "AZURE_OPENAI_API_VERSION_IMAGES": "2024-02-15-preview",
+    "FORCE_IMAGE_PROVIDER": "",
+
+    // --- LLM behaviour ---
+    "LLM_HTTP_TIMEOUT": "1500",
+    "LLM_MAX_RETRIES": "3",
+    "LLM_RETRY_BASE_DELAY": "1.0",
+    "USE_JSON_SCHEMA": "1",
+    "WP_MAX_TOKENS": "25000",
+    "FORCE_SHORT_MODE": "false",
+
+    // --- Article generation ---
+    "ARTICLE_MODE": "mega",
+    "WP_DEFAULT_WORDS": "5000",
+    "WP_MIN_WORDS": "3000",
+    "WP_MAX_WORDS": "15000",
+    "MEGA_MAX_WORDS": "4000",
+    "MEGA_BATCH_SIZE": "4",
+
+    // --- WordPress (required) ---
+    "WP_API_BASE": "https://YOUR-SITE.com/wp-json/wp/v2",
+    // Auth scheme: "jwt" (default) or "basic"
+    "WP_AUTH_SCHEME": "jwt",
+    // JWT mode: set WP_TOKEN
+    "WP_TOKEN": "your-jwt-token",
+    // Basic mode: set WP_BASIC_AUTH_B64 (base64 of "user:app-password")
+    // or set WP_USER + WP_APP_PASSWORD separately
+    "WP_BASIC_AUTH_B64": "",
+    "WP_USER": "",
+    "WP_APP_PASSWORD": "",
+    "WP_MAX_RETRIES": "3",
+    "WP_RETRY_BASE_DELAY": "1.0",
+
+    // --- Content / tags ---
+    "PER_POST_TAG_LIMIT": "3",
+    "ANCHOR_STRICT": "1",
+    "TAG_WHITELIST_PATH": "cfg_dir/tags.json",
+    "ANCHOR_MAP_PATH": "cfg_dir/anchor_map.json",
+
+    // --- Redis (optional — SerpApi caching) ---
+    "REDIS_HOST": "YOUR-CACHE.redis.cache.windows.net",
+    "REDIS_PORT": "6380",
+    "REDIS_PASSWORD": "your-redis-primary-key",
+    "REDIS_DB": "0",
+
+    // --- SerpApi (optional — keyword enrichment) ---
+    "SERPAPI_KEY": "your-serpapi-key",
+
+    // --- SEO image metadata ---
+    "KSJ_SEO_KEYWORD": "datu sinhronizācija",
+    "KSJ_SEO_DESC_SUFFIX": "Bez dublikātiem, uzlabota datu kvalitāte un uzticami atjauninājumi.",
+    "IMAGE_FIT_MODE": "auto",
+
+    // --- Facebook / links ---
+    "BOOK_LINK": "https://book.jurjans.dev"
+  }
+}
