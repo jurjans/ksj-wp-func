@@ -231,3 +231,56 @@ A completed job produces a JSON blob at `results/{opId}.json` with the following
 ```
 
 `contentHtml` uses only allowed tags: `h2`, `h3`, `p`, `ul`, `ol`, `li`, `strong`, `em`, `code`, `pre`, `blockquote`, `br`.
+
+---
+
+## WordPress Cron Configuration (Hostinger)
+
+### Problem
+
+LiteSpeed Cache v7.8+ calls `litespeed_finish_request()`, which terminates PHP before wp-cron events fire. All WordPress scheduled tasks silently fail — posts don't publish, plugins don't update, backups don't run. This affects all sites on Hostinger with LiteSpeed Cache enabled.
+
+The standard `curl wp-cron.php` approach does not work here: LiteSpeed intercepts the HTTP request and terminates it the same way.
+
+### Root Cause Diagnosis
+
+Diagnosed via SSH + WP-CLI:
+
+```bash
+wp cron test        # showed DISABLE_WP_CRON warning
+wp cron event run --due-now --path=/home/u944164873/domains/ksj.lv/public_html
+# ↑ proved WP-CLI works while HTTP wp-cron.php silently fails
+```
+
+### Solution
+
+A WP-CLI bash script invoked directly by a Hostinger server cron job, bypassing LiteSpeed entirely.
+
+### Implementation
+
+**1. Create the runner script** at `/home/u944164873/wp_cron_runner.sh`:
+
+```bash
+#!/bin/bash
+/usr/local/bin/wp cron event run --due-now --path=/home/u944164873/domains/ksj.lv/public_html
+```
+
+**2. Make it executable:**
+
+```bash
+chmod +x /home/u944164873/wp_cron_runner.sh
+```
+
+**3. Add a Hostinger cron job:**
+
+hPanel → Advanced → Cron Jobs → Custom → every 15 minutes:
+
+```
+bash /home/u944164873/wp_cron_runner.sh
+```
+
+### Important Notes
+
+- `DISABLE_WP_CRON = true` must remain in `wp-config.php` — this prevents the broken HTTP fallback from being attempted on every page load.
+- **Do not edit this cron job through the hPanel UI.** Hostinger forcibly prepends `/usr/bin/php /home/u944164873/` to all cron commands when saved via the UI, breaking the script path.
+- **Do not use `curl wp-cron.php`.** LiteSpeed intercepts and terminates the HTTP request before cron events fire.
