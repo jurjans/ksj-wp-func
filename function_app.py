@@ -356,6 +356,7 @@ def ok(**payload) -> func.HttpResponse:
     )
 
 from fb_gen import generate_fb_copy
+from en_article_gen import generate_en_article
 from content_plan import generate_content_plan
 
 
@@ -387,6 +388,21 @@ def generate_wp_article(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as e:
         logging.exception("build_wp_article_from_item failed")
         return bad(400, error="build_failed", message=str(e))
+    return ok(**data)
+# =============================================================================
+# HTTP: synchronous EN article generator
+# =============================================================================
+@app.function_name(name="generate_en_article")
+@app.route(route="generate-en-article", methods=["POST"], auth_level=func.AuthLevel.FUNCTION)
+def generate_en_article_endpoint(req: func.HttpRequest) -> func.HttpResponse:
+    incoming = read_incoming(req)
+    if not incoming:
+        return bad(400, error="Invalid JSON body")
+    try:
+        data = generate_en_article(incoming)
+    except Exception as e:
+        logging.exception("generate_en_article failed")
+        return bad(500, error="en_generation_failed", message=str(e)[:500])
     return ok(**data)
 # =============================================================================
 # HTTP: FB copy generator
