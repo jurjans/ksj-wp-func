@@ -747,9 +747,16 @@ def synthesize_image_prompt(ctx: dict, style_hint: str) -> str:
         RuntimeError: When the LLM returns empty content.
     """
     system = (
-        "You write a single high-quality image prompt for Azure OpenAI Images (DALLÂ·E 3 / gpt-image). "
-        "Constraints: 1200x630 social header, modern, clean, metaphorical visual. "
-        "No text overlays, no logos or trademarks, no faces or personal data, no political content. "
+        "You write a single image-generation prompt for a 1200x630 blog header. "
+        "Describe ONE photorealistic, cinematic 3D scene with a single clear hero subject as the focal point, "
+        "shot with shallow depth of field and soft background bokeh. "
+        "Lighting is dark, moody and professional; a restrained palette of dark neutral tones plus a single warm "
+        "light accent (optionally one cool accent), with generous negative space and quiet, uncluttered areas. "
+        "The visual is a clean conceptual metaphor for a B2B Microsoft 365 / SharePoint / AI consulting topic. "
+        "STRICTLY AVOID clutter: no busy collages, no many competing objects, no surfaces covered in gears, cogs, "
+        "circuit-board patterns or floating UI elements, no 'everything everywhere' tech montage. "
+        "No text, letters, words or numbers in the image; no logos or trademarks; no faces or identifiable people; "
+        "no political content. "
         "Output a single line, no quotes."
     )
     title = (ctx.get("title") or "").strip()
