@@ -61,6 +61,11 @@ EN_TEMPERATURE = float(os.getenv("EN_TEMPERATURE", "0.4"))
 KW_DENSITY_MIN_PCT = config.KW_DENSITY_MIN_PCT
 KW_DENSITY_MAX_PCT = config.KW_DENSITY_MAX_PCT
 
+EN_TITLE_POWER_WORDS = (
+    "proven", "essential", "complete", "definitive", "effective",
+    "practical", "comprehensive", "ultimate", "actionable",
+)
+
 
 # =============================================================================
 # Prompts
@@ -75,6 +80,18 @@ EN_SYSTEM_PROMPT = (
     "SharePoint automation.\n"
     "Return ONLY valid JSON matching the schema: title, seoSlug, excerpt, "
     "contentHtml, category, tags, tagSlugs, focusKeyword.\n\n"
+    "DEPTH (most important):\n"
+    "- Write a genuinely thorough article. Each <h3> section is 200-300 words and "
+    "must contain a concrete scenario, specific numbers, and at least one real "
+    "Microsoft 365 UI path or configuration step.\n"
+    "- Cover the topic so completely the reader needs no other source.\n"
+    "- Length is a by-product of depth. NEVER pad with filler, restated points, "
+    "generic intros or SEO boilerplate. A dense 1600-word article beats a padded "
+    "2500-word one.\n\n"
+    "ACCURACY (hard rule):\n"
+    "- Use only real, existing Microsoft 365 / SharePoint features, menus and UI "
+    "labels. NEVER invent a setting, toggle, menu name or API. If unsure of the exact "
+    "UI path, describe the action in general terms instead of inventing a label.\n\n"
     "WRITING PRINCIPLES:\n"
     "1. Back every claim with a concrete scenario or a number. Don't write "
     "'improves productivity' - write 'cuts document-search time from 12 minutes "
@@ -91,7 +108,9 @@ EN_SYSTEM_PROMPT = (
     "- 1 short <blockquote> summarising the key takeaway/ROI\n"
     "- Each section ends with a sentence that leads into the next\n\n"
     "SEO (RankMath):\n"
-    "- title: starts with the focus keyword, contains a number, max 60 characters\n"
+    "- title: starts with the focus keyword, contains a number AND one professional "
+    "power word (Proven, Essential, Complete, Definitive, Effective, Practical, "
+    "Comprehensive), max 60 characters. Professional tone - never clickbait.\n"
     "- excerpt: starts with the focus keyword, max 160 characters (meta description)\n"
     "- seoSlug: lowercase ASCII, words separated by '-', contains the focus keyword\n"
     "- contentHtml: the first sentence begins with the focus keyword; use the focus "
@@ -112,14 +131,16 @@ EN_USER_PROMPT = (
     "Audience: {audience}\n"
     "Focus keyword: {focusKeyword}\n"
     "Category: {wpCategory}\n"
-    "Target length: {targetWords} words (write 1500-2500; aim for ~{targetWords}).\n\n"
+    "Target length: about {targetWords} words, minimum 1500. Reach it through depth "
+    "(scenarios, numbers, real Microsoft 365 steps) - never through filler or "
+    "repetition. A short or generic article will be rejected.\n\n"
     "Write ONE complete, in-depth article in native English, following every system "
-    "rule. Cover the topic so thoroughly the reader needs no other source. Include at "
-    "least one concrete configuration example with Microsoft 365 UI steps, and end "
-    "with a quantified takeaway (time / money / percentage).\n\n"
+    "rule. Each of the 6-10 <h3> sections must be substantial (200-300 words) with a "
+    "concrete scenario, specific numbers, and at least one real Microsoft 365 UI step. "
+    "End with a quantified takeaway (time / money / percentage).\n\n"
     "Return ONLY valid JSON:\n"
     "{{\n"
-    '  "title": "starts with the focus keyword, contains a number, max 60 chars",\n'
+    '  "title": "starts with the focus keyword, contains a number and a power word, max 60 chars",\n'
     '  "seoSlug": "lowercase-ascii-with-dashes-containing-the-focus-keyword",\n'
     '  "excerpt": "starts with the focus keyword, max 160 chars",\n'
     '  "contentHtml": "<h2>...</h2><p>...</p><h3>...</h3><p>...</p>...",\n'
@@ -181,6 +202,8 @@ def quality_issues_en(data: dict, target_words: int) -> List[str]:
             issues.append(f"Title does not start with focus keyword: '{fk}'")
         if not re.search(r"\d", title):
             issues.append("Title contains no number")
+        if not any(pw in title.lower() for pw in EN_TITLE_POWER_WORDS):
+            issues.append("Title has no professional power word (e.g. Proven, Essential, Complete)")
         if len(title) > 60:
             issues.append(f"Title too long ({len(title)} > 60 chars)")
 
@@ -307,7 +330,7 @@ def generate_en_article(item: dict) -> dict:
         "messages": messages,
         "max_tokens": get_dynamic_max_tokens(target_words),
         "temperature": EN_TEMPERATURE,
-        "response_format": response_format_for_model(target_words),
+        "response_format": {"type": "json_object"},
     }
 
     logging.info(
