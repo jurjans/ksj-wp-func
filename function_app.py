@@ -358,6 +358,7 @@ def ok(**payload) -> func.HttpResponse:
 from fb_gen import generate_fb_copy
 from en_article_gen import generate_en_article
 from content_plan import generate_content_plan
+from content_plan_en import generate_en_content_plan
 
 
 # =============================================================================
@@ -473,6 +474,38 @@ def generate_content_plan_endpoint(req: func.HttpRequest) -> func.HttpResponse:
         status_code=200,
         mimetype="application/json",
     )
+
+
+@app.function_name(name="generate_content_plan_en")
+@app.route(
+    route="generate-content-plan-en",
+    methods=["POST"],
+    auth_level=func.AuthLevel.FUNCTION,
+)
+def generate_content_plan_en(req: func.HttpRequest) -> func.HttpResponse:
+    """Generate a monthly EN content plan for the /en/ shopfront."""
+    incoming = read_incoming(req) or {}
+
+    target_month = (incoming.get("targetMonth") or "").strip() or None
+    existing_items = incoming.get("existingItems") or []
+    existing_titles = incoming.get("existingTitles")  # optional pre-grouped
+    try:
+        articles_per_day = int(incoming.get("articlesPerDay", 1))
+    except Exception:
+        articles_per_day = 1
+
+    try:
+        result = generate_en_content_plan(
+            target_month=target_month,
+            existing_titles=existing_titles,
+            existing_items=existing_items,
+            articles_per_day=articles_per_day,
+        )
+    except Exception as e:
+        logging.exception("generate_en_content_plan failed")
+        return bad(500, error="content_plan_en_failed", message=str(e)[:500])
+
+    return ok(**result)
 
 
 #==============================================================================
@@ -733,12 +766,71 @@ def ksj_build_image_meta(ctx: dict, prompt_used: str, ext: str = ".png") -> dict
 # =============================================================================
 # Image generator endpoint
 # =============================================================================
+# ---------------------------------------------------------------------------
+# Style-specific system prompts for image prompt synthesis
+# ---------------------------------------------------------------------------
+_IMAGE_BASE_SYSTEM = (
+    "You write a single image-generation prompt for a 1200x630 blog header. "
+    "Describe ONE scene with a single clear hero subject as the focal point. "
+    "Use generous negative space and quiet, uncluttered areas. "
+    "The visual is a clean conceptual metaphor for a B2B Microsoft 365 / SharePoint / AI consulting topic. "
+    "STRICTLY AVOID clutter: no busy collages, no many competing objects, no surfaces covered in gears, "
+    "cogs, circuit-board patterns or floating UI elements, no 'everything everywhere' tech montage. "
+    "No text, letters, words or numbers in the image; no logos or trademarks; no faces or identifiable "
+    "people; no political content. "
+    "Output a single line, no quotes."
+)
+
+_IMAGE_STYLE_PHOTO = (
+    " STYLE: photorealistic photography. Real-world objects in natural materials, shot on a 50mm or "
+    "85mm lens equivalent with a wide aperture (f/1.8-f/2.8) for shallow depth of field and soft "
+    "background bokeh. Dark, moody, professional lighting with a restrained palette of deep neutral "
+    "tones plus a single warm light accent (optionally one cool accent). Real-world physics and "
+    "surface materials — no stylisation, no rendered look."
+)
+
+_IMAGE_STYLE_ISOMETRIC = (
+    " STYLE: clean technical illustration in isometric projection (no perspective vanishing points). "
+    "Simple geometric forms with flat-shaded surfaces and subtle highlights. Restrained palette of "
+    "deep neutral tones with a single warm accent — same dark, moody mood as the rest of the brand. "
+    "Vector-like crispness, minimal detail, plenty of empty space around the hero object. "
+    "No photographic realism."
+)
+
+_IMAGE_STYLE_3D = (
+    " STYLE: stylised rendered 3D scene with soft global illumination and subsurface scattering where "
+    "appropriate. Distinct material identity for each element (matte, glossy, metallic, brushed). "
+    "Ray-traced shadows, shallow depth of field with soft background bokeh. Dark moody palette with a "
+    "single warm light accent. Designed objects with sculpted, intentional forms — not photorealistic."
+)
+
+_IMAGE_STYLE_SYSTEMS = {
+    "photo": _IMAGE_BASE_SYSTEM + _IMAGE_STYLE_PHOTO,
+    "isometric": _IMAGE_BASE_SYSTEM + _IMAGE_STYLE_ISOMETRIC,
+    "3d": _IMAGE_BASE_SYSTEM + _IMAGE_STYLE_3D,
+}
+
+
+def _resolve_image_style_system(style_hint: str) -> str:
+    """Map a style hint string to its system prompt; defaults to Photo."""
+    s = (style_hint or "").strip().lower()
+    if s in ("3d", "3-d", "three-d", "render"):
+        return _IMAGE_STYLE_SYSTEMS["3d"]
+    if s in ("isometric", "iso"):
+        return _IMAGE_STYLE_SYSTEMS["isometric"]
+    return _IMAGE_STYLE_SYSTEMS["photo"]
+
+
 def synthesize_image_prompt(ctx: dict, style_hint: str) -> str:
     """Use the LLM to generate a single-line image prompt from article context.
 
+    Style-specific system prompts ensure Photo / Isometric / 3D each get the right
+    directives (lens + lighting for Photo, projection + palette for Isometric,
+    materials + shadows for 3D). Unknown or empty styles default to Photo.
+
     Args:
         ctx: Context dict with optional keys: title, primary, angle, audience.
-        style_hint: Visual style directive appended to the user message.
+        style_hint: One of "Photo", "Isometric", "3D" (case-insensitive).
 
     Returns:
         Single-line image prompt string.
@@ -746,19 +838,8 @@ def synthesize_image_prompt(ctx: dict, style_hint: str) -> str:
     Raises:
         RuntimeError: When the LLM returns empty content.
     """
-    system = (
-        "You write a single image-generation prompt for a 1200x630 blog header. "
-        "Describe ONE photorealistic, cinematic 3D scene with a single clear hero subject as the focal point, "
-        "shot with shallow depth of field and soft background bokeh. "
-        "Lighting is dark, moody and professional; a restrained palette of dark neutral tones plus a single warm "
-        "light accent (optionally one cool accent), with generous negative space and quiet, uncluttered areas. "
-        "The visual is a clean conceptual metaphor for a B2B Microsoft 365 / SharePoint / AI consulting topic. "
-        "STRICTLY AVOID clutter: no busy collages, no many competing objects, no surfaces covered in gears, cogs, "
-        "circuit-board patterns or floating UI elements, no 'everything everywhere' tech montage. "
-        "No text, letters, words or numbers in the image; no logos or trademarks; no faces or identifiable people; "
-        "no political content. "
-        "Output a single line, no quotes."
-    )
+    system = _resolve_image_style_system(style_hint)
+
     title = (ctx.get("title") or "").strip()
     primary = (ctx.get("primary") or "").strip()
     angle = (ctx.get("angle") or "").strip()
@@ -768,8 +849,7 @@ def synthesize_image_prompt(ctx: dict, style_hint: str) -> str:
         f"Title: {title}\n"
         f"Primary: {primary}\n"
         f"Angle: {angle}\n"
-        f"Audience: {audience}\n"
-        f"Desired style hint: {style_hint}"
+        f"Audience: {audience}"
     )
 
     payload = {
