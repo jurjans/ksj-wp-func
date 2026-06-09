@@ -24,6 +24,7 @@ Output (JSON):
 import calendar
 import logging
 import random
+import re
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -50,6 +51,18 @@ IMAGE_STYLES = ["Photo"]
 
 DEFAULT_ARTICLES_PER_DAY = 1
 TITLE_MAX_LEN = 60
+# Counts used only to guarantee a number when a generated title has none
+# (365 / 2026 / any quantity already satisfy the rule and are left untouched).
+_NUM_PREFIXES = ("3", "5", "6", "7", "10")
+
+
+def _ensure_title_number(title: str) -> str:
+    """If the title already contains any digit (incl. 365/2026), return it unchanged.
+    Otherwise prepend a small count so every title carries a number."""
+    if re.search(r"\d", title):
+        return title
+    candidate = f"{random.choice(_NUM_PREFIXES)} {title}"
+    return candidate if len(candidate) <= TITLE_MAX_LEN else candidate[:TITLE_MAX_LEN].rstrip()
 
 
 # =============================================================================
@@ -128,13 +141,12 @@ def _build_batch_prompt(
         "TITLE rules (each \"title\"):\n"
         "• English, max 60 characters\n"
         "• Leads on the focus keyword\n"
-        "• Each title should contain a number, but an existing number like '365' or '2026' or a specific "
-        "quantity already satisfies this — do NOT prepend a leading listicle count (e.g. '5 Proven…') when the "
-        "title already has a number. Prefer the organic number over a leading count.\n"
+        "• Every title MUST contain a number somewhere — an existing number like '365' or '2026', a specific "
+        "quantity, or a count all satisfy this. You need not lead with a count; prefer an organic number, but a "
+        "number must be present.\n"
         "• A professional power word (Proven, Essential, Practical, Definitive, …) may be used where it fits "
         "naturally — not in every title.\n"
-        "• Vary structure across the batch: avoid the repetitive 'Number + PowerWord + Topic' pattern; most "
-        "titles should NOT start with a digit.\n"
+        "• Vary structure across the batch: avoid the repetitive 'Number + PowerWord + Topic' pattern.\n"
         "• Concrete and specific — never generic\n"
         "• COMPLETELY different from the existing titles; each about a distinct subtopic\n"
         "• Tied to current Microsoft 365 / Copilot / AI capabilities or real business needs\n\n"
@@ -238,6 +250,7 @@ def generate_en_content_plan(
             title = (art.get("title") or "").strip()
             if not title:
                 continue
+            title = _ensure_title_number(title)
 
             all_known = existing_for_cat + generated_by_cat[cat]
             if not _is_unique(title, all_known):
