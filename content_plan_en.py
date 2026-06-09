@@ -24,6 +24,7 @@ Output (JSON):
 import calendar
 import logging
 import random
+import re
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -65,16 +66,12 @@ def _distribute_weighted(weights: Dict[str, float], total: int) -> Dict[str, int
     return floored
 
 
-def _is_unique(title: str, existing: List[str], prefix_len: int = 15) -> bool:
-    """Check title is not a duplicate or too similar (shared prefix)."""
+def _is_unique(title: str, existing: List[str]) -> bool:
+    """Reject only exact (case-insensitive) duplicates. The shared-prefix heuristic was removed:
+    EN titles often share a product-name lead ('Microsoft 365 Copilot:'), which the prefix check
+    wrongly flagged as duplicates and suffixed with '(v2)'."""
     t = title.lower().strip()
-    for ex in existing:
-        e = ex.lower().strip()
-        if t == e:
-            return False
-        if len(t) >= prefix_len and t[:prefix_len] == e[:prefix_len]:
-            return False
-    return True
+    return all(t != ex.lower().strip() for ex in existing)
 
 
 def _group_existing(existing_items: List[dict]) -> Dict[str, List[str]]:
@@ -165,6 +162,44 @@ def _build_batch_prompt(
         "temperature": 0.85,
         "response_format": {"type": "json_object"},
     }
+
+
+def _guarantee_numbers(titles: List[str], year: int) -> List[str]:
+    """Guarantee every title contains a number. Titles that already have a digit (incl. the '365'
+    in 'Microsoft 365' or a year) are returned untouched. Titles with NO digit are rewritten by the
+    model in ONE batched call to include a natural count or year, kept engaging, SEO-friendly and
+    <=60 chars. Any rewrite that still lacks a digit, or any failure, falls back to the original."""
+    idx = [i for i, t in enumerate(titles) if not re.search(r"\d", t)]
+    if not idx:
+        return titles
+    targets = [titles[i] for i in idx]
+    prompt = (
+        "Rewrite each article title so it includes a NUMBER that fits naturally, while staying an "
+        "engaging, intriguing, SEO-friendly, grammatical English headline on the SAME topic. Use either "
+        f"a real count ('5 Ways to...', '7 Steps to...') or the year {year}. Keep each <=60 characters. "
+        "Do NOT use the '365' in 'Microsoft 365' as the number, and keep product names written in full. "
+        'Return ONLY JSON {"titles": [...]} with the rewrites in the SAME order.\n\nTitles:\n'
+        + "\n".join(f"- {t}" for t in targets)
+    )
+    payload = {
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 80 * len(targets) + 200,
+        "temperature": 0.7,
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        out = chat_json(payload).get("titles", [])
+    except Exception as e:
+        logging.warning("[content_plan_en] number-guarantee pass failed: %s", e)
+        return titles
+    result = list(titles)
+    for j, i in enumerate(idx):
+        new = ((out[j] if j < len(out) else "") or "").strip()
+        if len(new) > TITLE_MAX_LEN:
+            new = new[: TITLE_MAX_LEN - 1] + "…"
+        if new and re.search(r"\d", new):
+            result[i] = new
+    return result
 
 
 # =============================================================================
@@ -268,6 +303,12 @@ def generate_en_content_plan(
             logging.warning(
                 "[content_plan_en] %s: requested %d, got %d", cat, count, len(arts)
             )
+
+    # Guarantee a number in every title (model rewrite only for the no-digit stragglers).
+    _titles = [a["title"] for a in all_articles]
+    _fixed = _guarantee_numbers(_titles, year)
+    for _a, _t in zip(all_articles, _fixed):
+        _a["title"] = _t
 
     # --- Assign dates (interleave categories across calendar days) ---
     by_cat: Dict[str, List[dict]] = {}
