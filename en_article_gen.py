@@ -630,7 +630,7 @@ def _build_en_reading_html(
         f'{ksj_col}{ms_col}'
         f'  </div>\n'
         f'  <p style="text-align:center;margin:18px 0 0;">\n'
-        f'    <a href="https://ksj.lv/en/contacts/" '
+        f'    <a href="https://ksj.lv/en/contact/" '
         f'style="display:inline-block;background:#2b8a3e;color:#ffffff;'
         f'padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:600;'
         f'font-size:15px;line-height:1.4;">{cta_text}</a>\n'
