@@ -146,8 +146,10 @@ EN_SYSTEM_PROMPT = (
     "- 1 short <blockquote> summarising the key takeaway/ROI\n"
     "- Each section ends with a sentence that leads into the next\n\n"
     "SEO (RankMath):\n"
-    "- title: a natural, grammatical English headline that starts with the focus keyword (capitalize "
-    "it naturally; you may follow it with ':' or '-'), max 60 characters, professional tone - never "
+    "- title: a natural, grammatical English headline that starts with the focus keyword in TITLE CASE "
+    "(capitalise each significant word, and keep common acronyms uppercase — HR, EU, AI, GDPR, NIS2, ISO, "
+    "ROI, KPI, CEO, CTO, CIO, SaaS, API, M365, …; e.g. 'hr automation copilot' becomes 'HR Automation "
+    "Copilot'; you may follow it with ':' or '-'), max 60 characters, professional tone - never "
     "clickbait. Include ONE number where it reads naturally: a real count ('5 Steps to…') or a year "
     "(2026), placed so the title stays grammatical. 'Microsoft 365' and 'Copilot' are product names - "
     "keep them in full and never use the '365' as the title's count. If the title already has a real "
@@ -302,6 +304,46 @@ def _normalize_en_tags(data: dict, limit: int = 6) -> dict:
     return data
 
 
+# Common acronyms that must stay uppercase in titles/excerpts
+_TITLE_ACRONYMS = {
+    "hr", "eu", "ai", "ml", "us", "uk", "it", "qa", "ux", "ui", "cx",
+    "kpi", "roi", "ceo", "cto", "cfo", "cio", "vp", "saas", "api", "sdk",
+    "css", "html", "url", "sql", "gdpr", "nis2", "iso", "soc", "b2b", "b2c",
+    "crm", "erp", "rest", "json", "xml", "yaml", "csv", "pdf", "spfx",
+    "m365", "ms",
+}
+
+
+def _smart_titlecase_keyword(kw: str) -> str:
+    """Title-case a focus keyword while preserving common acronyms.
+
+    'hr automation copilot' -> 'HR Automation Copilot'
+    'microsoft 365 governance' -> 'Microsoft 365 Governance'
+    'gdpr compliance copilot' -> 'GDPR Compliance Copilot'
+    """
+    if not kw:
+        return kw
+    out = []
+    for w in kw.split():
+        if w.lower() in _TITLE_ACRONYMS:
+            out.append(w.upper())
+        elif w.isdigit() or any(c.isdigit() for c in w):
+            out.append(w)
+        else:
+            out.append(w[:1].upper() + w[1:].lower())
+    return " ".join(out)
+
+
+def _fix_title_opening(text: str, focus_keyword: str) -> str:
+    """If text opens with the focus keyword (any case), rewrite that opening in Title Case."""
+    if not text or not focus_keyword:
+        return text
+    fk_lower = focus_keyword.lower()
+    if text.lower().startswith(fk_lower):
+        return _smart_titlecase_keyword(focus_keyword) + text[len(focus_keyword):]
+    return text
+
+
 # =============================================================================
 # Main entry point
 # =============================================================================
@@ -447,6 +489,14 @@ def generate_en_article(item: dict) -> dict:
     # Carry through category + focus keyword, then normalize EN tags.
     data.setdefault("category", category)
     data.setdefault("focusKeyword", focus_keyword)
+
+    # Title Case the opening focus keyword in title and excerpt;
+    # focusKeyword field stays lowercase for SEO/RankMath tracking.
+    if data.get("title"):
+        data["title"] = _fix_title_opening(data["title"], focus_keyword)
+    if data.get("excerpt"):
+        data["excerpt"] = _fix_title_opening(data["excerpt"], focus_keyword)
+
     data = _normalize_en_tags(data)
 
     # Resolve WP tag IDs (same helper the LV finalize uses), if WP is configured.
