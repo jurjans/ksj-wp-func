@@ -640,6 +640,99 @@ def _build_en_reading_html(
     return html
 
 
+# ============================================================================
+# Table of Contents — parses H2/H3 headings, assigns unique IDs, builds TOC.
+# Runs AFTER the Further reading block is appended so its H2 is included.
+# ============================================================================
+
+def _build_toc_and_add_ids(content_html: str) -> tuple[str, str]:
+    """Parse H2/H3 headings, assign unique IDs (in place), build TOC HTML.
+
+    Returns (toc_html, modified_content_html). If no headings found,
+    returns ('', content_html) unchanged.
+    """
+    heading_pattern = re.compile(
+        r'<(h[23])(?:\s[^>]*)?>(.*?)</\1>',
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    used_slugs: set = set()
+    headings: list[tuple[str, str, str]] = []  # (level, text, slug)
+
+    # Pass 1: collect headings, assign unique slugs
+    for m in heading_pattern.finditer(content_html):
+        level = m.group(1).lower()
+        text = re.sub(r'<[^>]+>', '', m.group(2)).strip()
+        if not text:
+            continue
+
+        base = slugify(text) or level
+        slug = base
+        n = 2
+        while slug in used_slugs:
+            slug = f"{base}-{n}"
+            n += 1
+        used_slugs.add(slug)
+        headings.append((level, text, slug))
+
+    if not headings:
+        return "", content_html
+
+    # Pass 2: rewrite headings with id attributes (preserve order)
+    idx = [0]
+
+    def _add_id(match):
+        if idx[0] >= len(headings):
+            return match.group(0)
+        level = match.group(1).lower()
+        inner = match.group(2)
+        text = re.sub(r'<[^>]+>', '', inner).strip()
+        if not text:
+            return match.group(0)
+        _, _, slug = headings[idx[0]]
+        idx[0] += 1
+        return f'<{level} id="{slug}">{inner}</{level}>'
+
+    modified_html = heading_pattern.sub(_add_id, content_html)
+
+    # Group: each H2 owns the following H3s until next H2
+    grouped: list[dict] = []
+    current = None
+    for level, text, slug in headings:
+        if level == "h2":
+            if current is not None:
+                grouped.append(current)
+            current = {"text": text, "slug": slug, "h3s": []}
+        elif level == "h3" and current is not None:
+            current["h3s"].append({"text": text, "slug": slug})
+    if current is not None:
+        grouped.append(current)
+
+    if not grouped:
+        return "", modified_html
+
+    # Build TOC HTML — simple nested list, lets WP theme handle styling
+    items_html = ""
+    for h2 in grouped:
+        sub = ""
+        if h2["h3s"]:
+            sub_items = "".join(
+                f'      <li><a href="#{h["slug"]}">{h["text"]}</a></li>\n'
+                for h in h2["h3s"]
+            )
+            sub = f'\n    <ul>\n{sub_items}    </ul>\n  '
+        items_html += f'  <li><a href="#{h2["slug"]}">{h2["text"]}</a>{sub}</li>\n'
+
+    toc_html = (
+        '<h2>Contents</h2>\n'
+        '<ul style="margin:0 0 28px 0;">\n'
+        f'{items_html}'
+        '</ul>'
+    )
+
+    return toc_html, modified_html
+
+
 def build_further_reading_en(meta: dict, focus_keyword: str, title: str) -> str:
     """Orchestrate the EN 'Further reading' block — parallel to LV build_papildu_lasamviela.
     Returns empty string when no links found (graceful skip)."""
@@ -787,6 +880,15 @@ def generate_en_article(item: dict) -> dict:
             logging.info("[en] Appended 'Further reading' block")
     except Exception as e:
         logging.warning(f"[en] Further reading block failed (skipping): {e}")
+
+    # Build TOC + add IDs to H2/H3 — runs LAST so Further reading H2 is included
+    try:
+        toc_html, content_with_ids = _build_toc_and_add_ids(data["contentHtml"])
+        if toc_html:
+            data["contentHtml"] = toc_html + "\n\n" + content_with_ids
+            logging.info("[en] Injected TOC")
+    except Exception as e:
+        logging.warning(f"[en] TOC injection failed (skipping): {e}")
 
     # Resolve WP tag IDs (same helper the LV finalize uses), if WP is configured.
     data["wpTagIds"] = []
