@@ -248,23 +248,37 @@ def _phase_mega(op_id: str, state: dict, meta: dict, target_words: int) -> dict:
     """Generate complete article in one API call using mega-prompt."""
     progress(op_id, "mega", 0, 1)
 
-    data = build_wp_article_mega(meta, target_words)
-
-    # Apply tag normalization + WP tag IDs (same as finalize)
-    data = normalize_tags(data, meta)
+    lang = ""
     try:
-        names = data.get("tags") or []
-        slugs = data.get("tagSlugs") or []
-        if names and slugs and not data.get("wpTagIds"):
-            if WP_API_BASE:
-                data["wpTagIds"] = ensure_wp_tag_ids(
-                    WP_API_BASE, WP_TOKEN, names=names, slugs=slugs,
-                )
-            else:
-                data["wpTagIds"] = []
-    except Exception as _e:
-        logging.warning(f"[wpTagIds] mega mode failed: {_e}")
-        data["wpTagIds"] = data.get("wpTagIds") or []
+        picked = pick_item(state["item"]) if isinstance(state.get("item"), dict) else None
+        lang = ((picked or {}).get("language") or meta.get("language") or "").strip().lower()
+    except Exception:
+        lang = (meta.get("language") or "").strip().lower()
+
+    if lang == "en":
+        # EN path: generate_en_article returns a complete WpArticle (tags/tagSlugs/wpTagIds
+        # already resolved via the EN tag path). Do NOT run LV normalize_tags() here — it would
+        # strip EN tags under the Latvian whitelist (ANCHOR_STRICT).
+        from en_article_gen import generate_en_article
+        data = generate_en_article(state["item"])
+    else:
+        data = build_wp_article_mega(meta, target_words)
+
+        # Apply tag normalization + WP tag IDs (same as finalize)
+        data = normalize_tags(data, meta)
+        try:
+            names = data.get("tags") or []
+            slugs = data.get("tagSlugs") or []
+            if names and slugs and not data.get("wpTagIds"):
+                if WP_API_BASE:
+                    data["wpTagIds"] = ensure_wp_tag_ids(
+                        WP_API_BASE, WP_TOKEN, names=names, slugs=slugs,
+                    )
+                else:
+                    data["wpTagIds"] = []
+        except Exception as _e:
+            logging.warning(f"[wpTagIds] mega mode failed: {_e}")
+            data["wpTagIds"] = data.get("wpTagIds") or []
 
     if "wpTagIds" not in data or data["wpTagIds"] is None:
         data["wpTagIds"] = []
