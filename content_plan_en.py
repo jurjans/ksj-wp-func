@@ -178,11 +178,15 @@ HOLISTIC_TITLE_SYSTEM = (
     f"{_SEO_CONTEXT}\n\n"
     "You write SEO-optimised, engaging English article headlines. Rules:\n"
     "- Title OPENS with the focus keyword (verbatim, naturally capitalised)\n"
-    "- Must contain ONE number somewhere — a count, year, version, or product number like 365 "
-    "— placed naturally in the sentence, never jammed\n"
+    "- Must contain EXACTLY ONE number total — a count ('5 Steps'), a year ('for 2026'), OR a product "
+    "number like '365'. Never combine: if 'Microsoft 365' appears in the title, do NOT also add a count "
+    "or year. If you use a count, do NOT also add a year. ONE number per title, never two.\n"
     "- Include a power word where it fits naturally (Proven, Essential, Practical, Complete, "
     "Definitive, Critical, Smart, …) — desirable but not forced into every title\n"
-    "- Punctuation (colon, dash, comma, …) only when it sounds natural for that specific title\n"
+    "- AVOID the colon (':'). It is currently overused — most titles should NOT have a colon. Use varied "
+    "structures: declarative statements ('Microsoft 365 Copilot Boosts HR Productivity'), 'How X Does Y' "
+    "phrasing, em-dashes, or no punctuation at all. At most 2-3 titles in the WHOLE batch may use a colon, "
+    "only where it truly cannot be phrased otherwise.\n"
     "- Max 60 characters — write to fit, never truncate\n"
     "- Concrete, specific, measurable outcome — what the reader gains\n"
     "- Professional tone, no clickbait\n"
@@ -245,6 +249,9 @@ def _gate_and_fix(
         issues = []
         if not re.search(r"\d", t):
             issues.append("missing number")
+        nums = re.findall(r"\d+", t)
+        if len(nums) > 1:
+            issues.append(f"multiple numbers ({', '.join(nums)}) — keep only one")
         if len(t) > TMAX:
             issues.append(f"too long ({len(t)}>{TMAX})")
         norm = t.lower()
@@ -267,8 +274,9 @@ def _gate_and_fix(
         )
     ctx = "\n".join(f"#{i+1}: {t}" for i, t in enumerate(titles))
     fix_prompt = (
-        f"Fix these {len(problems)} titles. Each must open with its keyword, "
-        f"contain a number naturally, be ≤60 chars, be unique from all others.\n\n"
+        f"Fix these {len(problems)} titles. Each must: open with its keyword, contain EXACTLY ONE "
+        f"number naturally (no count+year combos; if 'Microsoft 365' is present, no extra count/year), "
+        f"be ≤60 chars, be unique, avoid colon unless truly necessary.\n\n"
         f"Titles to fix:\n" + "\n".join(fix_lines) +
         f"\n\nFull set for context:\n{ctx}\n\n"
         'Return ONLY JSON: {"fixes": {"1": "title", "3": "title", ...}} '
