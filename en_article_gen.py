@@ -147,9 +147,12 @@ EN_SYSTEM_PROMPT = (
     "- Each section ends with a sentence that leads into the next\n\n"
     "SEO (RankMath):\n"
     "- title: starts with the focus keyword (capitalize it naturally as a title; you may follow it "
-    "with ':' or '-'), contains a number AND one professional power word (Proven, Essential, Complete, "
-    "Definitive, Effective, Practical, Comprehensive), max 60 characters. Professional tone - never "
-    "clickbait. Example: 'Copilot Alternative: 5 Proven EU-Ready Options'.\n"
+    "with ':' or '-'), max 60 characters, professional tone - never clickbait. A number is welcome but "
+    "NOT required, and an existing number like '365' or '2026' or a specific quantity already counts - "
+    "do NOT force a listicle count onto the title when it reads fine without one. Use a power word "
+    "(Proven, Essential, Practical, Definitive, …) only where it fits naturally. Prefer varied, natural "
+    "phrasing over the repetitive 'Number + PowerWord + Topic' pattern. Examples: 'Copilot Alternative: "
+    "A Practical EU-Ready Guide' or 'Microsoft 365 Copilot Governance in 2026'.\n"
     "- excerpt: starts with the focus keyword, max 160 characters (meta description)\n"
     "- seoSlug: lowercase ASCII, words separated by '-', contains the focus keyword\n"
     "- contentHtml: the first sentence begins with the focus keyword; use the focus "
@@ -241,8 +244,6 @@ def quality_issues_en(data: dict, target_words: int) -> List[str]:
             issues.append(f"Title does not start with focus keyword: '{fk}'")
         if not re.search(r"\d", title):
             issues.append("Title contains no number")
-        if not any(pw in title.lower() for pw in EN_TITLE_POWER_WORDS):
-            issues.append("Title has no professional power word (e.g. Proven, Essential, Complete)")
         if len(title) > 60:
             issues.append(f"Title too long ({len(title)} > 60 chars)")
 
