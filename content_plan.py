@@ -45,7 +45,7 @@ DEFAULT_CATEGORIES = [
 ]
 
 PHASES = ["L1", "L2", "L3"]
-IMAGE_STYLES = ["Photo", "Isometric", "Flat", "3D"]
+IMAGE_STYLES = ["Photo", "Isometric", "3D"]
 
 
 # =============================================================================

@@ -47,7 +47,7 @@ EN_CATEGORIES: List[str] = list(EN_CATEGORY_WEIGHTS.keys())
 
 PHASES = ["L1", "L2", "L3"]
 # EN images follow the photoreal / cinematic single-subject direction.
-IMAGE_STYLES = ["Photo", "Isometric", "Flat", "3D"]
+IMAGE_STYLES = ["Photo", "Isometric", "3D"]
 
 DEFAULT_ARTICLES_PER_DAY = 1
 TITLE_MAX_LEN = 60
