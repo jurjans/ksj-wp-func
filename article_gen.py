@@ -132,11 +132,11 @@ import requests
 
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 
-def serp_search_cached(q: str, ttl: int = DEFAULT_TTL, max_per_minute: int = 30) -> dict:
+def serp_search_cached(q: str, ttl: int = DEFAULT_TTL, max_per_minute: int = 30, gl: str = "lv", hl: str = "lv") -> dict:
     """Return SerpApi JSON for query q. Uses Redis cache, rate-limits calls; increments monthly counter on real call."""
     if not SERPAPI_KEY:
         return {}
-    cache_key = "serp:" + q.replace(" ", "_")[:200]
+    cache_key = f"serp:{gl}:{hl}:" + q.replace(" ", "_")[:200]
     res = redis_get(cache_key)
     if res is not None:
         return res
@@ -150,7 +150,7 @@ def serp_search_cached(q: str, ttl: int = DEFAULT_TTL, max_per_minute: int = 30)
         return {}
 
     url = "https://serpapi.com/search.json"
-    params = {"q": q, "engine": "google", "api_key": SERPAPI_KEY, "num": 10, "gl": "lv", "hl": "lv"}
+    params = {"q": q, "engine": "google", "api_key": SERPAPI_KEY, "num": 10, "gl": gl, "hl": hl}
     backoff = [1, 2, 4]
     for wait in backoff:
         try:

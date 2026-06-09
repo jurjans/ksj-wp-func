@@ -30,6 +30,8 @@ from typing import List
 
 from article_gen import (
     chat_json,
+    get_headers,
+    http_post_json,
     sanitize_html,
     slugify,
     count_words_from_html,
@@ -40,6 +42,7 @@ from article_gen import (
     ensure_wp_tag_ids,
     pick_item,
     extract_meta,
+    serp_search_cached,
 )
 
 import config
@@ -56,6 +59,8 @@ EN_DEFAULT_TARGET_WORDS = int(os.getenv("EN_DEFAULT_TARGET_WORDS", "2000"))
 EN_MIN_TARGET_WORDS = int(os.getenv("EN_MIN_TARGET_WORDS", "1500"))
 EN_MAX_TARGET_WORDS = int(os.getenv("EN_MAX_TARGET_WORDS", "2500"))
 EN_TEMPERATURE = float(os.getenv("EN_TEMPERATURE", "0.4"))
+EN_SERP_GL = os.getenv("EN_SERP_GL", "us")
+EN_SERP_HL = os.getenv("EN_SERP_HL", "en")
 
 # Reuse the LV RankMath density window so both pipelines agree.
 KW_DENSITY_MIN_PCT = config.KW_DENSITY_MIN_PCT
@@ -65,6 +70,32 @@ EN_TITLE_POWER_WORDS = (
     "proven", "essential", "complete", "definitive", "effective",
     "practical", "comprehensive", "ultimate", "actionable",
 )
+
+EN_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT_EN", "gpt-5.1-chat")
+
+
+def _en_chat_url() -> str:
+    """Azure chat-completions URL for the EN-specific deployment (same resource/key as LV, different model)."""
+    base = (os.getenv("AZURE_OPENAI_ENDPOINT", "") or "").rstrip("/")
+    ver = (os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview") or "").strip()
+    return f"{base}/openai/deployments/{EN_DEPLOYMENT}/chat/completions?api-version={ver}"
+
+
+def _en_chat_json(payload: dict) -> dict:
+    """Call the EN deployment and return parsed JSON. Keeps EN on gpt-5.1-chat while LV stays on gpt-4o."""
+    outer = http_post_json(_en_chat_url(), get_headers(), payload, timeout_sec=240)
+    text = (
+        outer.get("output_text")
+        or (outer.get("choices", [{}])[0].get("message", {}).get("content"))
+    )
+    if not text:
+        raise RuntimeError(f"No JSON returned by EN model: {str(outer)[:400]}")
+    if isinstance(text, str):
+        t = text.strip()
+        if t.startswith("```"):
+            t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t).strip()
+        return json.loads(t)
+    return text
 
 
 # =============================================================================
@@ -129,7 +160,7 @@ EN_USER_PROMPT = (
     "Subject: {primary}\n"
     "Angle: {angle}\n"
     "Audience: {audience}\n"
-    "Focus keyword: {focusKeyword}\n"
+    "{keywordInstruction}\n"
     "Category: {wpCategory}\n"
     "Target length: about {targetWords} words, minimum 1500. Reach it through depth "
     "(scenarios, numbers, real Microsoft 365 steps) - never through filler or "
@@ -147,7 +178,7 @@ EN_USER_PROMPT = (
     '  "category": "{wpCategory}",\n'
     '  "tags": ["3-6 English domain terms"],\n'
     '  "tagSlugs": ["ascii-slug"],\n'
-    '  "focusKeyword": "{focusKeyword}"\n'
+    '  "focusKeyword": "the focus keyword you chose"\n'
     "}}"
 )
 
@@ -273,11 +304,31 @@ def _chat_json_resilient(payload: dict, attempts: int = 2) -> dict:
     last_err = None
     for n in range(attempts):
         try:
-            return chat_json(payload)
+            return _en_chat_json(payload)
         except (RuntimeError, ValueError) as e:
             last_err = e
             logging.warning("[en] chat_json attempt %d/%d failed: %s", n + 1, attempts, e)
     raise last_err
+
+
+def _en_keyword_signals(meta: dict) -> dict:
+    """Real EN Google search signals (related searches + PAA) to inform keyword choice.
+    Reuses serp_search_cached (Redis cache + monthly guard + rate limit). {} if unavailable."""
+    primary = (meta.get("primary") or "").strip()
+    angle = (meta.get("angle") or "").strip()
+    q = (f"{primary} {angle}").strip() or (meta.get("titleHint") or "").strip()
+    if not q:
+        return {}
+    try:
+        serp = serp_search_cached(q[:90], gl=EN_SERP_GL, hl=EN_SERP_HL)
+    except Exception as e:
+        logging.warning("[en] SerpApi keyword signals failed: %s", e)
+        return {}
+    if not serp:
+        return {}
+    related = [(rs.get("query") or "").strip() for rs in serp.get("related_searches", [])[:6]]
+    paa = [(x.get("question") or "").strip() for x in serp.get("related_questions", [])[:6]]
+    return {"related_searches": [r for r in related if r], "paa": [p for p in paa if p]}
 
 
 def generate_en_article(item: dict) -> dict:
@@ -312,12 +363,37 @@ def generate_en_article(item: dict) -> dict:
            "(50-300 staff) in Germany, Denmark and the Nordics"
     )
 
+    signals = _en_keyword_signals(meta)
+    if signals.get("related_searches") or signals.get("paa"):
+        sig_lines = []
+        if signals.get("related_searches"):
+            sig_lines.append("Related Google searches (how people actually search): " + "; ".join(signals["related_searches"]))
+        if signals.get("paa"):
+            sig_lines.append("People Also Ask: " + " | ".join(signals["paa"]))
+        keyword_instruction = (
+            "Choose the single best SEO focus keyword (2-4 words, lowercase) for THIS article. "
+            "Strongly prefer a phrasing that matches how people actually search (see REAL SEARCH SIGNALS) "
+            "while staying accurate to the topic; the seed is only a hint.\n"
+            f"Seed hint: {focus_keyword}\n"
+            "REAL SEARCH SIGNALS:\n" + "\n".join(sig_lines) + "\n"
+            "Build the title, excerpt, slug, first sentence, >=2 H3 headings and 1-1.5% density "
+            "around YOUR chosen keyword, and return it in focusKeyword."
+        )
+        logging.info("[en] keyword signals: %d related, %d PAA",
+                     len(signals.get("related_searches", [])), len(signals.get("paa", [])))
+    else:
+        keyword_instruction = (
+            f"Focus keyword: {focus_keyword}\n"
+            "Build the title, excerpt, slug, first sentence, >=2 H3 headings and density around it, "
+            "and return it in focusKeyword."
+        )
+
     user_msg = EN_USER_PROMPT.format(
         title=title_hint,
         primary=meta.get("primary", ""),
         angle=meta.get("angle", ""),
         audience=audience,
-        focusKeyword=focus_keyword,
+        keywordInstruction=keyword_instruction,
         wpCategory=category,
         targetWords=target_words,
     )
@@ -328,8 +404,7 @@ def generate_en_article(item: dict) -> dict:
     ]
     base_payload = {
         "messages": messages,
-        "max_tokens": get_dynamic_max_tokens(target_words),
-        "temperature": EN_TEMPERATURE,
+        "max_completion_tokens": get_dynamic_max_tokens(target_words),
         "response_format": {"type": "json_object"},
     }
 
