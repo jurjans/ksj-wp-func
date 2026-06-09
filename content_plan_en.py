@@ -24,7 +24,6 @@ Output (JSON):
 import calendar
 import logging
 import random
-import re
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -51,19 +50,6 @@ IMAGE_STYLES = ["Photo"]
 
 DEFAULT_ARTICLES_PER_DAY = 1
 TITLE_MAX_LEN = 60
-# Counts used only to guarantee a number when a generated title has none
-# (365 / 2026 / any quantity already satisfy the rule and are left untouched).
-_NUM_PREFIXES = ("3", "5", "6", "7", "10")
-
-
-def _ensure_title_number(title: str) -> str:
-    """If the title already contains any digit (incl. 365/2026), return it unchanged.
-    Otherwise prepend a small count so every title carries a number."""
-    if re.search(r"\d", title):
-        return title
-    candidate = f"{random.choice(_NUM_PREFIXES)} {title}"
-    return candidate if len(candidate) <= TITLE_MAX_LEN else candidate[:TITLE_MAX_LEN].rstrip()
-
 
 # =============================================================================
 # Helpers
@@ -138,18 +124,21 @@ def _build_batch_prompt(
         "skeptical of hype.\n\n"
         f'TASK: Create {count} UNIQUE article-plan entries for the category '
         f'"{category}" for {month_name} ({target_month}).\n\n'
-        "TITLE rules (each \"title\"):\n"
-        "• English, max 60 characters\n"
-        "• Leads on the focus keyword\n"
-        "• Every title MUST contain a number somewhere — an existing number like '365' or '2026', a specific "
-        "quantity, or a count all satisfy this. You need not lead with a count; prefer an organic number, but a "
-        "number must be present.\n"
-        "• A professional power word (Proven, Essential, Practical, Definitive, …) may be used where it fits "
-        "naturally — not in every title.\n"
-        "• Vary structure across the batch: avoid the repetitive 'Number + PowerWord + Topic' pattern.\n"
-        "• Concrete and specific — never generic\n"
-        "• COMPLETELY different from the existing titles; each about a distinct subtopic\n"
-        "• Tied to current Microsoft 365 / Copilot / AI capabilities or real business needs\n\n"
+        "TITLE rules (each \"title\") — write natural, grammatical English headlines, never a mechanical "
+        "string of words and numbers:\n"
+        "• English, max 60 characters, leads on the focus keyword\n"
+        "• Include ONE number where it reads naturally: either a real count for a list ('7 Ways to…', "
+        "'5 Steps to…') or a year (2026), placed so the sentence stays grammatical\n"
+        "• 'Microsoft 365' and 'Copilot' are PRODUCT NAMES — keep them written in full; never treat the "
+        "'365' as the title's count or move it to the front as a number\n"
+        "• If the title already contains a real number, do NOT add another\n"
+        "• A power word (Proven, Essential, Practical, Definitive, …) only where it fits — not in every title\n"
+        "• Concrete and specific; each title a distinct subtopic, different from the existing titles; tied "
+        "to current Microsoft 365 / Copilot / AI capabilities or real business needs\n"
+        "GOOD: '7 Ways to Automate HR Tasks in Microsoft 365' | 'Microsoft 365 Copilot: A 2026 ROI Guide' "
+        "| '5 Steps to Audit AI Compliance in Copilot'\n"
+        "BAD: '365 Proven Ways to Automate Workflows' (365 misused as a count) | '6 Definitive Guide to AI "
+        "Compliance' (count + singular noun) | 'How 365 Drives AI Ethics' (product number used as a word)\n\n"
         "OTHER fields:\n"
         "• primary: the core topic (2–5 words)\n"
         "• angle: the specific subtopic/angle, with a number (5–10 words)\n"
@@ -250,7 +239,6 @@ def generate_en_content_plan(
             title = (art.get("title") or "").strip()
             if not title:
                 continue
-            title = _ensure_title_number(title)
 
             all_known = existing_for_cat + generated_by_cat[cat]
             if not _is_unique(title, all_known):
