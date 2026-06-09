@@ -164,42 +164,138 @@ def _build_batch_prompt(
     }
 
 
-def _guarantee_numbers(titles: List[str], year: int) -> List[str]:
-    """Guarantee every title contains a number. Titles that already have a digit (incl. the '365'
-    in 'Microsoft 365' or a year) are returned untouched. Titles with NO digit are rewritten by the
-    model in ONE batched call to include a natural count or year, kept engaging, SEO-friendly and
-    <=60 chars. Any rewrite that still lacks a digit, or any failure, falls back to the original."""
-    idx = [i for i, t in enumerate(titles) if not re.search(r"\d", t)]
-    if not idx:
-        return titles
-    targets = [titles[i] for i in idx]
-    prompt = (
-        "Rewrite each article title so it includes a NUMBER that fits naturally, while staying an "
-        "engaging, intriguing, SEO-friendly, grammatical English headline on the SAME topic. Use either "
-        f"a real count ('5 Ways to...', '7 Steps to...') or the year {year}. Keep each <=60 characters. "
-        "Do NOT use the '365' in 'Microsoft 365' as the number, and keep product names written in full. "
-        'Return ONLY JSON {"titles": [...]} with the rewrites in the SAME order.\n\nTitles:\n'
-        + "\n".join(f"- {t}" for t in targets)
+# ---------------------------------------------------------------------------
+# Holistic title generation
+# ---------------------------------------------------------------------------
+_SEO_CONTEXT = (
+    "Blog: ksj.lv/en — Microsoft 365 / SharePoint / AI consulting for mid-market EU companies "
+    "(50-300 staff). ICP: IT Managers, Heads of Ops, CIOs in Germany, Denmark and the Nordics "
+    "evaluating Microsoft 365 Copilot and AI-driven automation. "
+    "Positioning: Copilot alternative + EU angle (data residency, GDPR/NIS2, own-your-deployment)."
+)
+
+HOLISTIC_TITLE_SYSTEM = (
+    f"{_SEO_CONTEXT}\n\n"
+    "You write SEO-optimised, engaging English article headlines. Rules:\n"
+    "- Title OPENS with the focus keyword (verbatim, naturally capitalised)\n"
+    "- Must contain ONE number somewhere — a count, year, version, or product number like 365 "
+    "— placed naturally in the sentence, never jammed\n"
+    "- Include a power word where it fits naturally (Proven, Essential, Practical, Complete, "
+    "Definitive, Critical, Smart, …) — desirable but not forced into every title\n"
+    "- Punctuation (colon, dash, comma, …) only when it sounds natural for that specific title\n"
+    "- Max 60 characters — write to fit, never truncate\n"
+    "- Concrete, specific, measurable outcome — what the reader gains\n"
+    "- Professional tone, no clickbait\n"
+    "- Every title UNIQUE across the full batch; vary structure deliberately\n"
+    "Return ONLY valid JSON: {\"titles\": [\"...\", ...]} in the SAME order as input."
+)
+
+
+def _build_holistic_user_prompt(articles: List[dict], year: int, month_name: str) -> str:
+    lines = []
+    for i, a in enumerate(articles):
+        kw = (a.get("focusKeyword") or a.get("primary") or "").strip()
+        pr = (a.get("primary") or "").strip()
+        an = (a.get("angle") or "").strip()
+        cat = (a.get("wpCategory") or "").strip()
+        lines.append(f'{i+1}. keyword="{kw}"; topic="{pr}"; angle="{an}"; category="{cat}"')
+    return (
+        f"Month: {month_name} {year}. "
+        f"Craft {len(articles)} titles for the complete monthly set "
+        f"(all unique; vary structure across the batch).\n\n"
+        + "\n".join(lines)
     )
+
+
+def _holistic_titles(articles: List[dict], year: int, month_name: str) -> List[str]:
+    """Generate all titles in one call with full mutual visibility."""
     payload = {
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 80 * len(targets) + 200,
-        "temperature": 0.7,
+        "messages": [
+            {"role": "system", "content": HOLISTIC_TITLE_SYSTEM},
+            {"role": "user", "content": _build_holistic_user_prompt(articles, year, month_name)},
+        ],
+        "max_tokens": 100 * len(articles) + 400,
+        "temperature": 0.8,
         "response_format": {"type": "json_object"},
     }
     try:
         out = chat_json(payload).get("titles", [])
     except Exception as e:
-        logging.warning("[content_plan_en] number-guarantee pass failed: %s", e)
+        logging.warning("[content_plan_en] holistic title pass failed: %s", e)
+        return [a.get("title", "") or a.get("primary", "") for a in articles]
+
+    titles = list(out) + [""] * max(0, len(articles) - len(out))
+    titles = titles[: len(articles)]
+    for i, t in enumerate(titles):
+        if not (t or "").strip():
+            titles[i] = articles[i].get("title", "") or articles[i].get("primary", "")
+    return [str(t).strip() for t in titles]
+
+
+def _gate_and_fix(
+    titles: List[str], articles: List[dict], year: int
+) -> List[str]:
+    """Deterministic gates (dedup / ≤60 / has digit) + one corrective call."""
+    TMAX = 60
+    seen: dict = {}
+    problems: dict = {}
+
+    for i, t in enumerate(titles):
+        t = (t or "").strip()
+        issues = []
+        if not re.search(r"\d", t):
+            issues.append("missing number")
+        if len(t) > TMAX:
+            issues.append(f"too long ({len(t)}>{TMAX})")
+        norm = t.lower()
+        if norm in seen:
+            issues.append(f"duplicate of #{seen[norm]+1}")
+        else:
+            seen[norm] = i
+        if issues:
+            problems[i] = issues
+
+    if not problems:
         return titles
-    result = list(titles)
-    for j, i in enumerate(idx):
-        new = ((out[j] if j < len(out) else "") or "").strip()
-        if len(new) > TITLE_MAX_LEN:
-            new = new[: TITLE_MAX_LEN - 1] + "…"
-        if new and re.search(r"\d", new):
-            result[i] = new
-    return result
+
+    fix_lines = []
+    for i, iss in problems.items():
+        a = articles[i]
+        kw = (a.get("focusKeyword") or a.get("primary") or "").strip()
+        fix_lines.append(
+            f'#{i+1} problems=[{"; ".join(iss)}] keyword="{kw}" current="{titles[i]}"'
+        )
+    ctx = "\n".join(f"#{i+1}: {t}" for i, t in enumerate(titles))
+    fix_prompt = (
+        f"Fix these {len(problems)} titles. Each must open with its keyword, "
+        f"contain a number naturally, be ≤60 chars, be unique from all others.\n\n"
+        f"Titles to fix:\n" + "\n".join(fix_lines) +
+        f"\n\nFull set for context:\n{ctx}\n\n"
+        'Return ONLY JSON: {"fixes": {"1": "title", "3": "title", ...}} '
+        "(keys = 1-based position numbers)"
+    )
+    try:
+        resp = chat_json({
+            "messages": [
+                {"role": "system", "content": HOLISTIC_TITLE_SYSTEM},
+                {"role": "user", "content": fix_prompt},
+            ],
+            "max_tokens": 80 * len(problems) + 300,
+            "temperature": 0.7,
+            "response_format": {"type": "json_object"},
+        }).get("fixes", {})
+        result = list(titles)
+        for k, v in resp.items():
+            try:
+                idx = int(k) - 1
+                if 0 <= idx < len(result) and v:
+                    result[idx] = str(v).strip()[:TMAX]
+            except Exception:
+                pass
+        return result
+    except Exception as e:
+        logging.warning("[content_plan_en] gate corrective call failed: %s", e)
+        return titles
 
 
 # =============================================================================
@@ -304,11 +400,12 @@ def generate_en_content_plan(
                 "[content_plan_en] %s: requested %d, got %d", cat, count, len(arts)
             )
 
-    # Guarantee a number in every title (model rewrite only for the no-digit stragglers).
-    _titles = [a["title"] for a in all_articles]
-    _fixed = _guarantee_numbers(_titles, year)
-    for _a, _t in zip(all_articles, _fixed):
-        _a["title"] = _t
+    # --- Holistic title pass + deterministic gates ---
+    _raw = _holistic_titles(all_articles, year, month_name)
+    _final = _gate_and_fix(_raw, all_articles, year)
+    for _a, _t in zip(all_articles, _final):
+        if _t:
+            _a["title"] = _t
 
     # --- Assign dates (interleave categories across calendar days) ---
     by_cat: Dict[str, List[dict]] = {}
