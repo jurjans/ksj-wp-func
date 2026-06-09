@@ -28,6 +28,8 @@ import os
 import re
 from typing import List
 
+import requests
+
 from article_gen import (
     chat_json,
     get_headers,
@@ -43,6 +45,7 @@ from article_gen import (
     pick_item,
     extract_meta,
     serp_search_cached,
+    DEFAULT_TTL,
 )
 
 import config
@@ -383,6 +386,279 @@ def _en_keyword_signals(meta: dict) -> dict:
     return {"related_searches": [r for r in related if r], "paa": [p for p in paa if p]}
 
 
+# ============================================================================
+# "Further reading" block — EN parallel to LV "Papildu lasāmviela" in article_gen.py.
+# Same architecture:
+#   - Internal: KSJ posts via WP REST search, filtered by '/en/' in URL (Polylang).
+#   - External: Microsoft Learn docs via SerpApi, HEAD-verified.
+#   - Descriptions: GPT-generated in English (uses LV chat_json deployment for cost).
+#   - HTML: same two-column flex layout + CTA button, EN labels.
+# ============================================================================
+
+def _fetch_ksj_en_related_posts(focus_keyword: str, title: str, limit: int = 4) -> list[dict]:
+    """Query ksj.lv WP REST API for related EN posts (Polylang routes EN under '/en/')."""
+    api_base = (os.environ.get("WP_API_BASE") or "").rstrip("/")
+    if not api_base:
+        return []
+
+    results: list[dict] = []
+    seen_ids: set = set()
+    search_terms = [focus_keyword]
+    parts = focus_keyword.split()
+    if len(parts) > 1:
+        search_terms.append(parts[0])
+
+    for term in search_terms:
+        if len(results) >= limit:
+            break
+        try:
+            resp = requests.get(
+                f"{api_base}/wp/v2/posts",
+                params={
+                    "search": term,
+                    "per_page": limit + 4,
+                    "status": "publish",
+                    "_fields": "id,title,link,slug",
+                    "orderby": "relevance",
+                },
+                timeout=8,
+            )
+            if resp.status_code == 200:
+                posts = resp.json()
+                for p in posts:
+                    pid = p.get("id")
+                    link = (p.get("link") or "").strip()
+                    ptitle = (p.get("title", {}).get("rendered") or "").strip()
+                    if not link or not ptitle or pid in seen_ids:
+                        continue
+                    # Polylang EN-only filter — EN URLs contain '/en/'
+                    if "/en/" not in link:
+                        continue
+                    if ptitle.lower() == title.lower():
+                        continue
+                    seen_ids.add(pid)
+                    results.append({"url": link, "title": ptitle})
+                    if len(results) >= limit:
+                        break
+        except Exception as e:
+            logging.debug(f"[further_reading_en] WP search '{term}' failed: {e}")
+
+    logging.info(f"[further_reading_en] Found {len(results)} KSJ EN related posts")
+    return results[:limit]
+
+
+def _fetch_ms_docs_links_en(focus_keyword: str, limit: int = 4) -> list[dict]:
+    """SerpApi search for learn.microsoft.com EN docs, HEAD-verified."""
+    if not focus_keyword:
+        return []
+
+    results: list[dict] = []
+    seen_urls: set = set()
+
+    try:
+        # site: restriction dominates over geo params in serp_search_cached
+        ms_query = f"{focus_keyword} site:learn.microsoft.com/en-us"
+        serp = serp_search_cached(ms_query, ttl=DEFAULT_TTL * 4)
+        if serp:
+            for r in serp.get("organic_results", [])[:limit * 2]:
+                link = (r.get("link") or "").strip()
+                title = (r.get("title") or "").strip()
+                if not link or link in seen_urls:
+                    continue
+                if "learn.microsoft.com/en-us" not in link:
+                    continue
+                seen_urls.add(link)
+                results.append({"url": link, "title": title})
+                if len(results) >= limit + 2:
+                    break
+    except Exception as e:
+        logging.warning(f"[further_reading_en] MS docs SerpApi failed: {e}")
+
+    # HEAD verify — drop dead links
+    verified: list[dict] = []
+    for item in results:
+        try:
+            resp = requests.head(item["url"], timeout=5, allow_redirects=True)
+            if resp.status_code < 400:
+                verified.append(item)
+                if len(verified) >= limit:
+                    break
+        except Exception:
+            continue
+
+    logging.info(
+        f"[further_reading_en] MS docs: {len(results)} found, {len(verified)} verified"
+    )
+    return verified[:limit]
+
+
+def _generate_en_link_descriptions(
+    ksj_links: list[dict],
+    ms_links: list[dict],
+    focus_keyword: str,
+    article_title: str,
+) -> dict:
+    """GPT-generated English descriptions and clean titles for the link block."""
+    if not ksj_links and not ms_links:
+        return {"ksj": [], "ms": []}
+
+    ksj_items_text = "\n".join(
+        f'- {i+1}. "{item["title"]}" ({item["url"]})'
+        for i, item in enumerate(ksj_links)
+    )
+    ms_items_text = "\n".join(
+        f'- {i+1}. "{item["title"]}" ({item["url"]})'
+        for i, item in enumerate(ms_links)
+    )
+
+    system = (
+        "You generate concise English descriptions and titles for blog reference links. "
+        "Reply ONLY with valid JSON."
+    )
+    user = (
+        f'Article title: "{article_title}"\n'
+        f'Focus keyword: "{focus_keyword}"\n\n'
+        f"KSJ ARTICLES (write 1-2 sentence English description of how each relates to the main topic):\n"
+        f"{ksj_items_text}\n\n"
+        f"MICROSOFT RESOURCES (clean up each title to 5-10 English words + 1-sentence description):\n"
+        f"{ms_items_text}\n\n"
+        f"JSON format:\n"
+        f'{{\n'
+        f'  "ksj": [{{"index": 1, "desc": "Short English description..."}}],\n'
+        f'  "ms": [{{"index": 1, "title_en": "Clean English title", "desc": "Short description..."}}]\n'
+        f'}}'
+    )
+
+    try:
+        payload = {
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": 800,
+            "temperature": 0.4,
+        }
+        outer = chat_json(payload)
+
+        ksj_result = []
+        ksj_descs = {d["index"]: d.get("desc", "") for d in (outer.get("ksj") or [])}
+        for i, item in enumerate(ksj_links):
+            desc = ksj_descs.get(i + 1, "")
+            ksj_result.append({"url": item["url"], "title": item["title"], "desc": desc})
+
+        ms_result = []
+        ms_data = {d["index"]: d for d in (outer.get("ms") or [])}
+        for i, item in enumerate(ms_links):
+            d = ms_data.get(i + 1, {})
+            title_en = d.get("title_en", "") or item["title"]
+            desc = d.get("desc", "")
+            ms_result.append({"url": item["url"], "title_en": title_en, "desc": desc})
+
+        return {"ksj": ksj_result, "ms": ms_result}
+    except Exception as e:
+        logging.warning(f"[further_reading_en] GPT descriptions failed: {e}")
+        return {
+            "ksj": [{"url": l["url"], "title": l["title"], "desc": ""} for l in ksj_links],
+            "ms": [{"url": l["url"], "title_en": l["title"], "desc": ""} for l in ms_links],
+        }
+
+
+def _build_en_reading_html(
+    ksj_links: list[dict],
+    ms_links: list[dict],
+    focus_keyword: str,
+) -> str:
+    """Build the EN 'Further reading' HTML block — two-column flex + CTA button."""
+    if not ksj_links and not ms_links:
+        return ""
+
+    ksj_items_html = ""
+    for item in ksj_links:
+        desc_html = ""
+        if item.get("desc"):
+            desc_html = f'<br>\n          <small style="color:#666;">{item["desc"]}</small>'
+        ksj_items_html += (
+            f'        <li style="margin-bottom:8px;">\n'
+            f'          <a href="{item["url"]}">{item["title"]}</a>{desc_html}\n'
+            f'        </li>\n'
+        )
+
+    ms_items_html = ""
+    for item in ms_links:
+        title = item.get("title_en") or item.get("title") or ""
+        desc_html = ""
+        if item.get("desc"):
+            desc_html = f'<br>\n          <small style="color:#666;">{item["desc"]}</small>'
+        ms_items_html += (
+            f'        <li style="margin-bottom:8px;">\n'
+            f'          <a href="{item["url"]}" target="_blank" rel="noopener noreferrer">{title}</a>{desc_html}\n'
+            f'        </li>\n'
+        )
+
+    cta_topic = focus_keyword
+    if len(cta_topic) > 40:
+        cta_topic = " ".join(cta_topic.split()[:4])
+    cta_text = f"Contact KSJ about {cta_topic}"
+
+    ksj_col = ""
+    if ksj_items_html:
+        ksj_col = (
+            f'    <div style="flex:1 1 320px;min-width:240px;">\n'
+            f'      <strong>Related KSJ articles</strong>\n'
+            f'      <ul style="margin:8px 0 14px 18px;padding:0;color:#222;">\n'
+            f'{ksj_items_html}'
+            f'      </ul>\n'
+            f'    </div>\n'
+        )
+
+    ms_col = ""
+    if ms_items_html:
+        ms_col = (
+            f'    <div style="flex:1 1 320px;min-width:240px;">\n'
+            f'      <strong>Official resources</strong>\n'
+            f'      <ul style="margin:8px 0 14px 18px;padding:0;color:#222;">\n'
+            f'{ms_items_html}'
+            f'      </ul>\n'
+            f'    </div>\n'
+        )
+
+    html = (
+        f'<h2>Further reading</h2>\n'
+        f'<div style="border:1px solid #e6e6e6;padding:22px;border-radius:8px;'
+        f'background:#fbfbfb;font-family:Arial,Helvetica,sans-serif;color:#222;margin-top:28px;">\n'
+        f'  <div style="display:flex;flex-wrap:wrap;gap:24px;">\n'
+        f'{ksj_col}{ms_col}'
+        f'  </div>\n'
+        f'  <p style="text-align:center;margin:18px 0 0;">\n'
+        f'    <a href="https://ksj.lv/en/contacts/" '
+        f'style="display:inline-block;background:#2b8a3e;color:#ffffff;'
+        f'padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:600;'
+        f'font-size:15px;line-height:1.4;">{cta_text}</a>\n'
+        f'  </p>\n'
+        f'</div>'
+    )
+    return html
+
+
+def build_further_reading_en(meta: dict, focus_keyword: str, title: str) -> str:
+    """Orchestrate the EN 'Further reading' block — parallel to LV build_papildu_lasamviela.
+    Returns empty string when no links found (graceful skip)."""
+    ksj_links = _fetch_ksj_en_related_posts(focus_keyword, title, limit=4)
+    ms_links = _fetch_ms_docs_links_en(focus_keyword, limit=4)
+
+    if not ksj_links and not ms_links:
+        logging.info("[further_reading_en] No links found, skipping block")
+        return ""
+
+    enriched = _generate_en_link_descriptions(ksj_links, ms_links, focus_keyword, title)
+
+    return _build_en_reading_html(
+        ksj_links=enriched.get("ksj") or ksj_links,
+        ms_links=enriched.get("ms") or ms_links,
+        focus_keyword=focus_keyword,
+    )
+
+
 def generate_en_article(item: dict) -> dict:
     """Generate one English-native WordPress article from a SharePoint item.
 
@@ -498,6 +774,19 @@ def generate_en_article(item: dict) -> dict:
         data["excerpt"] = _fix_title_opening(data["excerpt"], focus_keyword)
 
     data = _normalize_en_tags(data)
+
+    # Append "Further reading" block (EN parallel to LV "Papildu lasāmviela")
+    try:
+        reading_block = build_further_reading_en(
+            meta=meta,
+            focus_keyword=focus_keyword,
+            title=data.get("title", ""),
+        )
+        if reading_block:
+            data["contentHtml"] = data["contentHtml"].rstrip() + "\n\n" + reading_block
+            logging.info("[en] Appended 'Further reading' block")
+    except Exception as e:
+        logging.warning(f"[en] Further reading block failed (skipping): {e}")
 
     # Resolve WP tag IDs (same helper the LV finalize uses), if WP is configured.
     data["wpTagIds"] = []
