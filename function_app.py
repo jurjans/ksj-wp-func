@@ -4,6 +4,7 @@
 import io
 import logging
 import os
+import random
 import re
 import unicodedata
 import urllib.error
@@ -784,8 +785,7 @@ _IMAGE_BASE_SYSTEM = (
 _IMAGE_STYLE_PHOTO = (
     " STYLE: photorealistic photography. Real-world objects in natural materials, shot on a 50mm or "
     "85mm lens equivalent with a wide aperture (f/1.8-f/2.8) for shallow depth of field and soft "
-    "background bokeh. Dark, moody, professional lighting with a restrained palette of deep neutral "
-    "tones plus a single warm light accent (optionally one cool accent). Real-world physics and "
+    "background bokeh. {lighting} Real-world physics and "
     "surface materials — no stylisation, no rendered look."
 )
 
@@ -800,8 +800,8 @@ _IMAGE_STYLE_ISOMETRIC = (
 _IMAGE_STYLE_3D = (
     " STYLE: stylised rendered 3D scene with soft global illumination and subsurface scattering where "
     "appropriate. Distinct material identity for each element (matte, glossy, metallic, brushed). "
-    "Ray-traced shadows, shallow depth of field with soft background bokeh. Dark moody palette with a "
-    "single warm light accent. Designed objects with sculpted, intentional forms — not photorealistic."
+    "Ray-traced shadows, shallow depth of field with soft background bokeh. {lighting} "
+    "Designed objects with sculpted, intentional forms — not photorealistic."
 )
 
 _IMAGE_STYLE_SYSTEMS = {
@@ -810,15 +810,32 @@ _IMAGE_STYLE_SYSTEMS = {
     "3d": _IMAGE_BASE_SYSTEM + _IMAGE_STYLE_3D,
 }
 
+# Per-generation lighting/palette rotation so headers no longer come out dark
+# every time. The dark option keeps ~2x the weight of each other so the brand's
+# signature dark mood still dominates. Applied to Photo and 3D only (Isometric
+# keeps its own flat-shaded palette — moods like golden-hour would not suit it).
+_IMAGE_LIGHTING_DIRECTIVES = (
+    "Lighting is dark, moody and professional; a restrained palette of dark neutral tones plus a single warm light accent (optionally one cool accent).",
+    "Lighting is soft, bright natural daylight; a light high-key palette of clean whites and pale neutrals with gentle soft shadows.",
+    "Lighting is even, soft studio lighting on a clean seamless background; a balanced mid-tone neutral palette of warm greys with one restrained accent colour.",
+    "Lighting is warm, directional golden-hour sunlight with long soft shadows; an amber and honey palette, cosy but clean and professional.",
+    "Lighting is crisp, cool daylight; a light cool-grey palette with a single teal/cyan accent, modern and clean.",
+)
+_IMAGE_LIGHTING_WEIGHTS = (2, 1, 1, 1, 1)
 
-def _resolve_image_style_system(style_hint: str) -> str:
-    """Map a style hint string to its system prompt; defaults to Photo."""
+
+def _resolve_image_style_system(style_hint: str, lighting: str) -> str:
+    """Map a style hint string to its system prompt; defaults to Photo.
+
+    The chosen lighting/palette directive is injected into the Photo and 3D
+    prompts (which carry a {lighting} placeholder). Isometric is returned as-is.
+    """
     s = (style_hint or "").strip().lower()
     if s in ("3d", "3-d", "three-d", "render"):
-        return _IMAGE_STYLE_SYSTEMS["3d"]
+        return _IMAGE_STYLE_SYSTEMS["3d"].format(lighting=lighting)
     if s in ("isometric", "iso"):
         return _IMAGE_STYLE_SYSTEMS["isometric"]
-    return _IMAGE_STYLE_SYSTEMS["photo"]
+    return _IMAGE_STYLE_SYSTEMS["photo"].format(lighting=lighting)
 
 
 def synthesize_image_prompt(ctx: dict, style_hint: str) -> str:
@@ -838,7 +855,11 @@ def synthesize_image_prompt(ctx: dict, style_hint: str) -> str:
     Raises:
         RuntimeError: When the LLM returns empty content.
     """
-    system = _resolve_image_style_system(style_hint)
+    # Pick one lighting/palette directive per generation (dark stays ~2x likely).
+    lighting = random.choices(
+        _IMAGE_LIGHTING_DIRECTIVES, weights=_IMAGE_LIGHTING_WEIGHTS, k=1
+    )[0]
+    system = _resolve_image_style_system(style_hint, lighting)
 
     title = (ctx.get("title") or "").strip()
     primary = (ctx.get("primary") or "").strip()
