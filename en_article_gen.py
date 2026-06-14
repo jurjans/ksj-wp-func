@@ -743,23 +743,24 @@ def _build_toc_and_add_ids(content_html: str) -> tuple[str, str]:
     if not grouped:
         return "", modified_html
 
-    # Build TOC HTML — simple nested list, lets WP theme handle styling
+    # Build TOC HTML — mirror the LV inject_toc() Rank Math block markup exactly
+    # (Rank Math detects a TOC via the block's CSS class, not arbitrary inline HTML).
     items_html = ""
     for h2 in grouped:
         sub = ""
         if h2["h3s"]:
             sub_items = "".join(
-                f'      <li><a href="#{h["slug"]}">{h["text"]}</a></li>\n'
+                f'      <li class=""><a href="#{h["slug"]}">{h["text"]}</a></li>\n'
                 for h in h2["h3s"]
             )
             sub = f'\n    <ul>\n{sub_items}    </ul>\n  '
-        items_html += f'  <li><a href="#{h2["slug"]}">{h2["text"]}</a>{sub}</li>\n'
+        items_html += f'  <li class=""><a href="#{h2["slug"]}">{h2["text"]}</a>{sub}</li>\n'
 
     toc_html = (
         '<div class="wp-block-rank-math-toc-block" id="rank-math-toc">\n'
         '<h2>Contents</h2>\n'
         '<nav>\n'
-        '<ul style="margin:0 0 28px 0;">\n'
+        '<ul>\n'
         f'{items_html}'
         '</ul>\n'
         '</nav>\n'
