@@ -350,19 +350,51 @@ def _fix_title_opening(text: str, focus_keyword: str) -> str:
 # =============================================================================
 # Main entry point
 # =============================================================================
-def _chat_json_resilient(payload: dict, attempts: int = 2) -> dict:
+def _is_contentless(data: dict) -> bool:
+    """A parsed mega response is unusable (no draft to work with) when it has
+    no title, an empty/whitespace-only contentHtml, or an explicit error key.
+    Feeding such a response to the corrective EN_RETRY_USER pass makes the model
+    refuse ("No previous version of the article exists...") and return a
+    titleless object, so it must be treated as a generation failure instead."""
+    if not isinstance(data, dict):
+        return True
+    if data.get("error"):
+        return True
+    if not (data.get("title") or "").strip():
+        return True
+    if not (data.get("contentHtml") or "").strip():
+        return True
+    return False
+
+
+def _chat_json_resilient(payload: dict, attempts: int = 2, require_content: bool = False) -> dict:
     """chat_json with a retry on an empty/unparseable response.
 
     chat_json raises RuntimeError on empty content and ValueError on bad JSON
-    (the transient empty-response failure mode). Retry once before giving up.
+    (the transient empty-response failure mode). Retry before giving up.
+
+    With require_content=True, a parsed-but-contentless response (missing
+    title/contentHtml or an explicit error key) is ALSO treated as a transient
+    failure and the SAME prompt is re-issued. This regenerates the article from
+    the original mega prompt instead of running the quality-fix retry on an
+    empty draft.
     """
     last_err = None
     for n in range(attempts):
         try:
-            return _en_chat_json(payload)
+            data = _en_chat_json(payload)
         except (RuntimeError, ValueError) as e:
             last_err = e
             logging.warning("[en] chat_json attempt %d/%d failed: %s", n + 1, attempts, e)
+            continue
+        if require_content and _is_contentless(data):
+            last_err = ValueError("contentless response (no usable title/contentHtml)")
+            logging.warning(
+                "[en] chat_json attempt %d/%d returned a contentless draft, regenerating",
+                n + 1, attempts,
+            )
+            continue
+        return data
     raise last_err
 
 
@@ -838,7 +870,10 @@ def generate_en_article(item: dict) -> dict:
         focus_keyword, target_words, category,
     )
 
-    data = _chat_json_resilient(base_payload)
+    # First (mega) call: regenerate from the ORIGINAL prompt on a contentless
+    # response (up to 2 extra attempts) rather than running the quality-fix retry
+    # on an empty draft. The corrective retry below runs only on a real draft.
+    data = _chat_json_resilient(base_payload, attempts=3, require_content=True)
     data["contentHtml"] = sanitize_html(data.get("contentHtml", ""))
 
     issues = quality_issues_en(data, target_words)
