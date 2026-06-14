@@ -283,6 +283,18 @@ def _phase_mega(op_id: str, state: dict, meta: dict, target_words: int) -> dict:
     if "wpTagIds" not in data or data["wpTagIds"] is None:
         data["wpTagIds"] = []
 
+    # Safety net: never mark a job "done" with an unusable result. A titleless
+    # result (or one carrying an explicit error) would pass the Publisher flow's
+    # "done" gate and then fail at Parse_JSON_-_result ("missing title"). Mark the
+    # job "failed" instead so the flow's Condition else-branch can Terminate cleanly.
+    if not isinstance(data, dict) or data.get("error") or not (data.get("title") or "").strip():
+        err = str(data.get("error")) if isinstance(data, dict) and data.get("error") else "result has no title"
+        logging.error(f"[worker] mega job {op_id} produced unusable result: {err}")
+        status_upsert(op_id, "failed", error=err[:500])
+        state["phase"] = "failed"
+        state_save(op_id, state)
+        return state
+
     # Store result blob
     bc = get_blob_client(op_id)
     bc.upload_blob(
