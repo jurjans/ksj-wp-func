@@ -724,10 +724,14 @@ def _build_toc_and_add_ids(content_html: str) -> tuple[str, str]:
         items_html += f'  <li><a href="#{h2["slug"]}">{h2["text"]}</a>{sub}</li>\n'
 
     toc_html = (
+        '<div class="wp-block-rank-math-toc-block" id="rank-math-toc">\n'
         '<h2>Contents</h2>\n'
+        '<nav>\n'
         '<ul style="margin:0 0 28px 0;">\n'
         f'{items_html}'
-        '</ul>'
+        '</ul>\n'
+        '</nav>\n'
+        '</div>'
     )
 
     return toc_html, modified_html
