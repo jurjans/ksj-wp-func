@@ -663,7 +663,7 @@ def _build_en_reading_html(
         f'  </div>\n'
         f'  <p style="text-align:center;margin:18px 0 0;">\n'
         f'    <a href="https://ksj.lv/en/contact/" '
-        f'style="display:inline-block;background:#2b8a3e;color:#ffffff;'
+        f'style="display:inline-block;background:#B23A2E;color:#ffffff;'
         f'padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:600;'
         f'font-size:15px;line-height:1.4;">{cta_text}</a>\n'
         f'  </p>\n'
@@ -770,23 +770,95 @@ def _build_toc_and_add_ids(content_html: str) -> tuple[str, str]:
     return toc_html, modified_html
 
 
+# ---------------------------------------------------------------------------
+# Money block — always-on conversion links to KSJ's revenue pages.
+# The generated article body forbids <a> tags, so contextual links to the
+# Privault / pricing / construction pages are injected here, post-sanitize,
+# alongside the "Further reading" block. This routes blog link-equity and
+# readers to the pages that turn traffic into engagements.
+# ---------------------------------------------------------------------------
+EN_MONEY_LINKS = [
+    (
+        "https://ksj.lv/en/privault-copilot-alternative-microsoft-365/",
+        "Privault — a private Copilot alternative for Microsoft 365",
+        "Our flagship: a private AI agent grounded in your SharePoint, with cited answers, deployed in your own tenant.",
+    ),
+    (
+        "https://ksj.lv/en/pricing/",
+        "Pricing &amp; plans",
+        "Fixed-scope projects you own — Audit from €1,500, builds from €4,950.",
+    ),
+]
+EN_CONSTRUCTION_LINK = (
+    "https://ksj.lv/en/microsoft-365-automation-construction/",
+    "Microsoft 365 automation for construction",
+    "Invoice-approval automation and private AI for multi-site construction firms.",
+)
+_EN_CONSTRUCTION_HINTS = (
+    "construction", "contractor", "subcontractor", "invoice",
+    "site manager", "building", "procurement",
+)
+
+
+def _build_en_money_block(focus_keyword: str, title: str) -> str:
+    """Always-on conversion block linking to KSJ's revenue pages + a branded CTA.
+
+    Independent of any search, so every article routes readers and link-equity
+    to Privault and pricing (and the construction vertical when the topic fits)."""
+    blob = f"{focus_keyword} {title}".lower()
+    links = list(EN_MONEY_LINKS)
+    if any(h in blob for h in _EN_CONSTRUCTION_HINTS):
+        links.insert(1, EN_CONSTRUCTION_LINK)
+
+    items = ""
+    for url, name, desc in links:
+        items += (
+            f'      <li style="margin-bottom:10px;">\n'
+            f'        <a href="{url}" style="font-weight:600;color:#B23A2E;">{name}</a><br>\n'
+            f'        <small style="color:#666;">{desc}</small>\n'
+            f'      </li>\n'
+        )
+
+    return (
+        '<h2>How KSJ can help</h2>\n'
+        '<div style="border:1px solid #E8E3DC;padding:22px;border-radius:8px;'
+        'background:#FAF8F5;font-family:Arial,Helvetica,sans-serif;color:#222;margin-top:28px;">\n'
+        '  <ul style="margin:8px 0 14px 18px;padding:0;">\n'
+        f'{items}'
+        '  </ul>\n'
+        '  <p style="text-align:center;margin:18px 0 0;">\n'
+        '    <a href="https://ksj.lv/en/pricing/" style="display:inline-block;background:#B23A2E;'
+        'color:#ffffff;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:600;'
+        'font-size:15px;line-height:1.4;">See pricing &amp; book a discovery call</a>\n'
+        '  </p>\n'
+        '</div>'
+    )
+
+
 def build_further_reading_en(meta: dict, focus_keyword: str, title: str) -> str:
-    """Orchestrate the EN 'Further reading' block — parallel to LV build_papildu_lasamviela.
-    Returns empty string when no links found (graceful skip)."""
+    """Orchestrate the EN end-of-article blocks.
+
+    Always returns an unconditional 'How KSJ can help' money block (links to
+    Privault / pricing / construction + a branded CTA). When related KSJ posts
+    or Microsoft Learn docs are found, a 'Further reading' block is rendered
+    above it. The money block is never skipped, so every article routes readers
+    and link-equity to the revenue pages."""
+    money_html = _build_en_money_block(focus_keyword, title)
+
     ksj_links = _fetch_ksj_en_related_posts(focus_keyword, title, limit=4)
     ms_links = _fetch_ms_docs_links_en(focus_keyword, limit=4)
 
     if not ksj_links and not ms_links:
-        logging.info("[further_reading_en] No links found, skipping block")
-        return ""
+        logging.info("[further_reading_en] No reading links found; using money block only")
+        return money_html
 
     enriched = _generate_en_link_descriptions(ksj_links, ms_links, focus_keyword, title)
-
-    return _build_en_reading_html(
+    reading_html = _build_en_reading_html(
         ksj_links=enriched.get("ksj") or ksj_links,
         ms_links=enriched.get("ms") or ms_links,
         focus_keyword=focus_keyword,
     )
+    return f"{reading_html}\n\n{money_html}" if reading_html else money_html
 
 
 def generate_en_article(item: dict) -> dict:
