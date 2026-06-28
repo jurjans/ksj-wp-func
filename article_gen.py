@@ -2507,7 +2507,7 @@ def _build_reading_html(
         f'  </div>\n'
         f'  <p style="text-align:center;margin:18px 0 0;">\n'
         f'    <a href="https://ksj.lv/kontakti/" '
-        f'style="display:inline-block;background:#2b8a3e;color:#ffffff;'
+        f'style="display:inline-block;background:#B23A2E;color:#ffffff;'
         f'padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:600;'
         f'font-size:15px;line-height:1.4;">{cta_text}</a>\n'
         f'  </p>\n'
@@ -2516,16 +2516,67 @@ def _build_reading_html(
     return html
 
 
+# ---------------------------------------------------------------------------
+# Money block (LV) — always-on conversion links to KSJ's revenue pages.
+# LV counterpart to en_article_gen._build_en_money_block. The article body
+# forbids <a> tags, so links to Privault (LV) and the services page are injected
+# here, post-sanitize, so every LV article routes readers and link-equity to the
+# revenue pages. (No LV pricing/construction pages yet, so those are EN-only.)
+# ---------------------------------------------------------------------------
+LV_MONEY_LINKS = [
+    (
+        "https://ksj.lv/privault-copilot-alternativa-microsoft-365/",
+        "Privault — privāta Copilot alternatīva Microsoft 365",
+        "Mūsu pamatprodukts: privāts AI aģents, kas balstīts jūsu SharePoint datos, ar atsaucēm — jūsu pašu vidē.",
+    ),
+    (
+        "https://ksj.lv/sharepoint-un-microsoft-365-automatizacijas-risinajumi/",
+        "Pakalpojumi",
+        "Microsoft 365 un SharePoint automatizācija, ko izstrādājam un uzturam jūsu pašu tenantā.",
+    ),
+]
+
+
+def _build_lv_money_block(focus_keyword: str, title: str) -> str:
+    """Vienmēr-ieslēgts konversijas bloks ar saitēm uz KSJ naudas lapām + CTA.
+
+    Neatkarīgs no meklēšanas, tāpēc katrs raksts novirza lasītājus un link-equity
+    uz Privault un pakalpojumiem."""
+    items = ""
+    for url, name, desc in LV_MONEY_LINKS:
+        items += (
+            f'      <li style="margin-bottom:10px;">\n'
+            f'        <a href="{url}" style="font-weight:600;color:#B23A2E;">{name}</a><br>\n'
+            f'        <small style="color:#666;">{desc}</small>\n'
+            f'      </li>\n'
+        )
+    return (
+        '<h2>Kā KSJ var palīdzēt</h2>\n'
+        '<div style="border:1px solid #E8E3DC;padding:22px;border-radius:8px;'
+        'background:#FAF8F5;font-family:Arial,Helvetica,sans-serif;color:#222;margin-top:28px;">\n'
+        '  <ul style="margin:8px 0 14px 18px;padding:0;">\n'
+        f'{items}'
+        '  </ul>\n'
+        '  <p style="text-align:center;margin:18px 0 0;">\n'
+        '    <a href="https://ksj.lv/kontakti/" style="display:inline-block;background:#B23A2E;'
+        'color:#ffffff;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:600;'
+        'font-size:15px;line-height:1.4;">Pieteikties 30 minūšu konsultācijai</a>\n'
+        '  </p>\n'
+        '</div>'
+    )
+
+
 def build_papildu_lasamviela(
     meta: dict,
     research: dict,
     focus_keyword: str,
     title: str,
 ) -> str:
-    """
-    Main entry point: fetch links, generate descriptions, build HTML.
-    Returns empty string if insufficient data.
-    """
+    """Galvenā ieeja: vienmēr atgriež "Kā KSJ var palīdzēt" naudas bloku; kad atrod
+    saistītos KSJ rakstus vai MS dokumentus, virs tā pievieno "Papildu lasāmviela"
+    bloku. Naudas bloks netiek izlaists, tāpēc katrs raksts ved uz naudas lapām."""
+    money_html = _build_lv_money_block(focus_keyword, title)
+
     # Fetch KSJ related posts
     ksj_links = _fetch_ksj_related_posts(focus_keyword, title, limit=4)
 
@@ -2533,20 +2584,19 @@ def build_papildu_lasamviela(
     ms_links = _fetch_ms_docs_links(research, focus_keyword, limit=4)
 
     if not ksj_links and not ms_links:
-        logging.info("[papildu] No links found, skipping block")
-        return ""
+        logging.info("[papildu] No reading links found; using money block only")
+        return money_html
 
     # Generate Latvian descriptions via GPT
     enriched = _generate_link_descriptions(ksj_links, ms_links, focus_keyword, title)
 
-    # Build HTML
-    html = _build_reading_html(
+    reading_html = _build_reading_html(
         ksj_links=enriched.get("ksj") or ksj_links,
         ms_links=enriched.get("ms") or ms_links,
         focus_keyword=focus_keyword,
     )
 
-    return html
+    return f"{reading_html}\n\n{money_html}" if reading_html else money_html
 
 
 def build_wp_article_from_item(item: dict) -> dict:
